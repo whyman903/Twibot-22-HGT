@@ -10,6 +10,7 @@ import torch
 from torch import nn
 import torch.amp as amp
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 from src.data import TwiBot22DataModule
 from src.data.loaders import create_neighbor_loader
@@ -75,6 +76,7 @@ class Trainer:
             self.writer = SummaryWriter(log_dir=str(config.log_dir))
 
     def train(self) -> None:
+        print("Starting training...", flush=True)
         best_metric = -math.inf
         best_epoch = -1
         for epoch in range(1, self.cfg.epochs + 1):
@@ -120,7 +122,8 @@ class Trainer:
         total_loss = 0.0
         total_examples = 0
 
-        for batch in loader:
+        print(f"Starting epoch {epoch}...", flush=True)
+        for batch_idx, batch in enumerate(tqdm(loader, desc=f"Epoch {epoch}")):
             batch = batch.to(self.device)
             user_nodes = batch["user"]
             batch_size = user_nodes.batch_size
@@ -175,7 +178,7 @@ class Trainer:
         all_labels = []
         all_logits = []
 
-        for batch in loader:
+        for batch in tqdm(loader, desc=f"Evaluating {split}"):
             batch = batch.to(self.device)
             user_nodes = batch["user"]
             batch_size = user_nodes.batch_size
