@@ -1,0 +1,17 @@
+numpy
+pandas
+matplotlib
+seaborn
+scikit-learn
+tqdm
+ijson
+transformers
+torch
+sentencepiece
+sentence-transformers
+pyarrow
+torch-geometric
+torch-sparse
+torch-scatter
+tensorboard
+peft

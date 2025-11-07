@@ -1,0 +1,294 @@
+commit 1a98c36a73581c43142385a396f29e8e923041a7
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Wed Sep 24 16:24:23 2025 +0100
+
+    Version v1.71.1
+
+commit 931ab7c4dbee7d348cbba1f3c133dca130835531
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Sat Aug 30 11:06:40 2025 +0100
+
+    pacer: fix deadlock with --max-connections
+    
+    If the pacer was used recursively and --max-connections was in use
+    then it could deadlock if all the connections were in use at the time
+    of recursive call (likely).
+    
+    This affected the azureblob backend because when it receives an
+    InvalidBlockOrBlob error it attempts to clear the condition before
+    retrying. This in turn involves recursively calling the pacer.
+    
+    This fixes the problem by skipping the --max-connections check if the
+    pacer is called recursively.
+    
+    The recursive detection is done by stack inspection which isn't ideal,
+    but the alternative would be to add ctx to all >1,000 pacer calls. The
+    benchmark reveals stack inspection takes about 55nS per stack level so
+    it is relatively cheap.
+
+commit 2b531ada347c9601e0aea0790c34398ca25a64c7
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Sat Aug 30 10:29:45 2025 +0100
+
+    Revert "azureblob: fix deadlock with --max-connections with InvalidBlockOrBlob errors"
+    
+    This reverts commit 0c1902cc6037d81eaf95e931172879517a25d529.
+    
+    This turns out not to be sufficient so we need a better approach
+
+commit 45f45c987c6aeb7ae250593f02a0c9efc1149893
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Thu Sep 11 17:27:15 2025 +0100
+
+    march: fix deadlock when using --fast-list on syncs - fixes #8811
+    
+    Before this change, it was possible to have a deadlock when using
+    --fast-list for a sync if both the source and destination supported
+    ListR.
+    
+    This fixes the problem by shortening the locking window.
+
+commit d2351e60b69da721dce70a7685ac0a176ed68aeb
+Author: dougal <dougal.craigwood@gmail.com>
+Date:   Tue Sep 9 16:29:54 2025 +0100
+
+    docs: HDFS: erasure coding limitation #8808
+
+commit f8de6b48f1feb924bfac1e71b3978b432dd70eca
+Author: nielash <nielronash@gmail.com>
+Date:   Sat Sep 6 05:09:22 2025 -0400
+
+    local: fix rmdir "Access is denied" on windows - fixes #8363
+    
+    Before this change, Rmdir (and other commands that rely on Rmdir) would fail
+    with "Access is denied" on Windows, if the directory had
+    FILE_ATTRIBUTE_READONLY. This could happen if, for example, an empty folder had
+    a custom icon added via Windows Explorer's interface (Properties => Customize =>
+    Change Icon...).
+    
+    However, Microsoft docs indicate that "This attribute is not honored on
+    directories."
+    https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants#file_attribute_readonly
+    Accordingly, this created an odd situation where such directories were removable
+    (by their owner) via File Explorer and the rd command, but not via rclone.
+    
+    An upstream issue has been open since 2018, but has not yet resulted in a fix.
+    https://github.com/golang/go/issues/26295
+    
+    This change gets around the issue by doing os.Chmod on the dir and then retrying
+    os.Remove. If the dir is not empty, this will still fail with "The directory is
+    not empty."
+    
+    A bisync user confirmed that it fixed their issue in
+    https://forum.rclone.org/t/bisync-leaving-empty-directories-on-unc-path-1-or-local-filesystem-path-2-on-directory-renames/52456/4?u=nielash
+    
+    It is likely also a fix for #8019, although @ncw is correct that Purge would be
+    a more efficient solution in that particular scenario.
+
+commit 616a280aaca26ab77d64eb3996f63fcfd6c1dc48
+Author: nielash <nielronash@gmail.com>
+Date:   Sat Sep 6 03:27:03 2025 -0400
+
+    bisync: fix error handling for renamed conflicts
+    
+    Before this change, rclone could crash during modifyListing if a rename's
+    srcNewName is known but not found in the srcList
+    (srcNewName != "" && new == nil).
+    This scenario should not happen, but if it does, we should print an error
+    instead of crashing.
+    
+    On #8458 there is a report of this possibly happening on v1.68.2. It is unknown
+    what the underlying issue was, and whether it still exists in the latest
+    version, but if it does, the user will now see an error and debug info instead
+    of a crash.
+
+commit e1833f40902ce2ff4e8487e72023140d5100e764
+Author: Jean-Christophe Cura <jcaspes@gmail.com>
+Date:   Fri Sep 5 21:50:00 2025 +0200
+
+    docs: pcloud: update root_folder_id instructions
+
+commit 135d89d0f90b1cf1ef68ab5d8f12f9403b8c5598
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Sat Feb 1 11:01:05 2025 +0000
+
+    operations: fix partial name collisions for non --inplace copies
+    
+    In this commit:
+    
+    c63f1865f36058e1 operations: copy: generate stable partial suffix
+    
+    We made the partial suffix for non inplace copies stable. This was a
+    hash based off the file fingerprint.
+    
+    However, given a directory of files which have the same fingerprint
+    the partial suffix collides. On some backends (eg the local backend)
+    the fingerprint is just the size and modification time so files with
+    different contents can collide.
+    
+    The effect of collisions was hash failures on copy when using
+    --transfers > 1. These copies invariably retried successfully which
+    probably explains why this bug hasn't been reported.
+    
+    This fixes the problem by adding the file name to the hash.
+    
+    It also makes sure the hash is always represented as 8 hex bytes for
+    consistency.
+
+commit ea54bddbd5f791178642643798598fe1113e99a6
+Author: Ed Craig-Wood <138211970+edc-w@users.noreply.github.com>
+Date:   Thu Sep 4 13:11:15 2025 +0100
+
+    drive: docs: update making your own client ID instructions
+    
+    update instructions with the most recent changes to google cloud console
+
+commit baf61679309823715be304175d47fa2e467e3436
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Tue Sep 2 16:15:12 2025 +0100
+
+    internetarchive: fix server side copy files with spaces
+    
+    In this commit we broke server side copy for files with spaces
+    
+    4c5764204d7df2da internetarchive: fix server side copy files with &
+    
+    This fixes the problem by using rest.URLPathEscapeAll which escapes
+    everything possible.
+    
+    Fixes #8754
+
+commit 1d91618d9ef16496d98f11a7d89b7cd59ef61e5d
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Tue Sep 2 16:13:28 2025 +0100
+
+    lib/rest: add URLPathEscapeAll to URL escape as many chars as possible
+
+commit 4a7e62b79c93263b660a37bb2aac8b806bb3b251
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Tue Sep 2 16:58:30 2025 +0100
+
+    docs: add link to MEGA S4 from MEGA page
+
+commit dcca477f39c3380f6e906d985ebfbdd73eef9c03
+Author: anon-pradip <pradipsubedi360@gmail.com>
+Date:   Sat Aug 30 23:59:35 2025 +0545
+
+    docs: clarify subcommand description in rclone usage
+
+commit 7304ecaf18b7f5b37def3efdb3d9c0d44d0d03cb
+Author: albertony <12441419+albertony@users.noreply.github.com>
+Date:   Thu Aug 28 09:07:26 2025 +0200
+
+    docs: fix description of regex syntax of name transform
+
+commit c3932ecde1765534afc2be7f30ab958e5df0e31f
+Author: albertony <12441419+albertony@users.noreply.github.com>
+Date:   Thu Aug 28 09:04:37 2025 +0200
+
+    docs: add some more details about supported regex syntax
+
+commit c9df7b1cd70b7d130458c830c472404dbb31586f
+Author: nielash <nielronash@gmail.com>
+Date:   Sat Aug 30 00:31:55 2025 -0400
+
+    makefile: fix lib/transform docs not getting updated
+    
+    As of
+    https://github.com/rclone/rclone/commit/4280ec75ccfd27fbc4f646d5323b8ed060062be5
+    the lib/transform docs are generated with //go:generate and embedded with
+    //go:embed.
+    
+    Before this change, however, they were not getting automatically updated with
+    subsequent changes (like
+    https://github.com/rclone/rclone/commit/fe62a2bb4ea8f62a1567c7883c0bba81827656eb)
+    because `go generate ./lib/transform` was not being run as part of the release
+    making process.
+    
+    This change fixes that by running it in `make commanddocs`.
+
+commit 3985496e5d1121dd66d89bd6e6780e07e0dca727
+Author: dougal <dougal.craigwood@gmail.com>
+Date:   Mon Sep 1 12:14:57 2025 +0100
+
+    vfs: fix SIGHUP killing serve instead of flushing directory caches
+    
+    Before, rclone serve would crash when sent a SIGHUP which contradicts
+    the documentation - saying it should flush the directory caches.
+    
+    Moved signal handling from the mount into the vfs layer, which now
+    handles SIGHUP on all uses of the VFS including mount and serve.
+    
+    Fixes #8607
+
+commit 0d2ef2eb209e7bb6324505a80746a6569de156e5
+Author: albertony <12441419+albertony@users.noreply.github.com>
+Date:   Wed Aug 27 21:34:33 2025 +0200
+
+    docs: remove broken links from rc to commands
+
+commit 836e19243d95103aa5a27089ed5f0215e4203459
+Author: Claudius Ellsel <claudius.ellsel@live.de>
+Date:   Wed Aug 27 22:01:28 2025 +0200
+
+    docs: add example of how to add date as suffix
+
+commit 0a6cce1bc1943e22c748c2de12d12ba781eed864
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Tue Aug 26 09:39:49 2025 +0100
+
+    box: fix about after change in API return - fixes #8776
+
+commit cffb6732a4da9d5a32757846cd2adc6872f34944
+Author: albertony <12441419+albertony@users.noreply.github.com>
+Date:   Tue Aug 26 14:29:33 2025 +0200
+
+    docs: fix incorrectly escaped windows path separators
+
+commit 236f247c59ac7e9fcd1b1a0321b7f0aeba855ce2
+Author: albertony <12441419+albertony@users.noreply.github.com>
+Date:   Tue Aug 26 13:44:33 2025 +0200
+
+    build: restore error handling in gendocs
+
+commit 3b07f9d34dfb4380d39c9c6523234b49463a516a
+Author: skbeh <60107333+skbeh@users.noreply.github.com>
+Date:   Mon Aug 25 10:19:47 2025 +0000
+
+    combine: propagate SlowHash feature
+
+commit bad77c642f58abf622ec88186a3cc8095c194f02
+Author: albertony <12441419+albertony@users.noreply.github.com>
+Date:   Mon Aug 25 09:39:13 2025 +0200
+
+    docs/oracleobjectstorage: add introduction before external links and remove broken link
+
+commit 41eef6608b0bfe1652d4d013916bbe925bc75451
+Author: albertony <12441419+albertony@users.noreply.github.com>
+Date:   Mon Aug 25 00:00:48 2025 +0200
+
+    docs: fix markdown lint issues in backend docs
+
+commit fc6bd9ff7976582dfef087e1fd5faf6a082aee82
+Author: albertony <12441419+albertony@users.noreply.github.com>
+Date:   Sun Aug 24 21:12:04 2025 +0200
+
+    docs: fix markdown lint issues in command docs
+
+commit ee83cd214c0780b5de7b970630efb93439c1e6c2
+Author: albertony <12441419+albertony@users.noreply.github.com>
+Date:   Sun Aug 24 21:13:07 2025 +0200
+
+    docs: update markdown code block json indent size 2
+
+commit 2c2642a927fceee844cb330f85b985ee17923dda
+Author: Tilman Vogel <tilman.vogel@web.de>
+Date:   Sat Aug 23 17:30:33 2025 +0200
+
+    mount: do not log successful unmount as an error - fixes #8766
+
+commit 32eed8dd361449bb6e7552d1d1b9f078d9175327
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Mon Sep 22 17:15:11 2025 +0100
+
+    Start v1.71.1-DEV development
