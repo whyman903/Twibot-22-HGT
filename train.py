@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-data", type=Path, default=Path("TwiBot-22"), help="Path to raw TwiBot-22 dataset directory")
     parser.add_argument("--processed-dir", type=Path, default=Path("processed"), help="Directory to store processed artifacts")
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--num-layers", type=int, default=3)

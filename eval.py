@@ -20,13 +20,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path, default=None, help="Path to model checkpoint (defaults to processed_dir/best_model.pt)")
     parser.add_argument("--split", type=str, default="test", choices=["train", "valid", "val", "test"], help="Dataset split to evaluate")
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--batch-size", type=int, default=8192)
+    parser.add_argument("--batch-size", type=int, default=256, help="Batch size for evaluation (reduce if OOM)")
     parser.add_argument("--num-layers", type=int, default=3)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--graph-heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.3)
-    parser.add_argument("--max-tweets", type=int, default=8)
-    parser.add_argument("--text-max-length", type=int, default=512, help="Max tokens for text encoder input")
+    parser.add_argument("--max-tweets", type=int, default=2)
+    parser.add_argument("--text-max-length", type=int, default=128, help="Max tokens for text encoder input")
     parser.add_argument(
         "--num-neighbors",
         type=int,

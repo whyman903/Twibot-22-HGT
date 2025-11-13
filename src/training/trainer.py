@@ -129,7 +129,7 @@ class Trainer:
             batch_size = user_nodes.batch_size
             input_nodes = user_nodes.n_id[:batch_size]
 
-            labels_full = self.data_module.labels[input_nodes].to(self.device)
+            labels_full = self.data_module.labels[input_nodes.cpu()].to(self.device)
             mask = labels_full >= 0
             if mask.sum() == 0:
                 continue
@@ -137,8 +137,8 @@ class Trainer:
             if self.data_module.text_store is None or self.data_module.profile_store is None:
                 raise RuntimeError("Data module stores are not initialized. Call setup() first.")
 
-            text_inputs = self.data_module.text_store.fetch(input_nodes.tolist())
-            profile_features = self.data_module.profile_store.fetch(input_nodes.tolist()).to(self.device)
+            text_inputs = self.data_module.text_store.fetch(input_nodes.cpu().tolist())
+            profile_features = self.data_module.profile_store.fetch(input_nodes.cpu().tolist()).to(self.device)
 
             for opt in self.optimizers.values():
                 opt.zero_grad(set_to_none=True)
@@ -184,7 +184,7 @@ class Trainer:
             batch_size = user_nodes.batch_size
             input_nodes = user_nodes.n_id[:batch_size]
 
-            labels_full = self.data_module.labels[input_nodes].to(self.device)
+            labels_full = self.data_module.labels[input_nodes.cpu()].to(self.device)
             mask = labels_full >= 0
             if mask.sum() == 0:
                 continue
@@ -192,8 +192,8 @@ class Trainer:
             if self.data_module.text_store is None or self.data_module.profile_store is None:
                 raise RuntimeError("Data module stores are not initialized. Call setup() first.")
 
-            text_inputs = self.data_module.text_store.fetch(input_nodes.tolist())
-            profile_features = self.data_module.profile_store.fetch(input_nodes.tolist()).to(self.device)
+            text_inputs = self.data_module.text_store.fetch(input_nodes.cpu().tolist())
+            profile_features = self.data_module.profile_store.fetch(input_nodes.cpu().tolist()).to(self.device)
 
             logits = self.model(batch, text_inputs, profile_features)
             logits = logits[mask]

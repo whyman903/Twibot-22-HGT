@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=twibot_train_eval
+#SBATCH --job-name=twibot_eval
 #SBATCH --chdir=/sciclone/home/hwhyman/Graph_learning
-#SBATCH --output=logs/twibot_train_eval_%j.log
-#SBATCH --error=logs/twibot_train_eval_%j.err
+#SBATCH --output=logs/twibot_eval_%j.log
+#SBATCH --error=logs/twibot_eval_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=96G
-#SBATCH --time=12:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=64G
+#SBATCH --time=02:00:00
 #SBATCH --gres=gpu:1
 
 set -euo pipefail
@@ -18,8 +18,6 @@ source /sciclone/home/hwhyman/Graph_learning/.venv/bin/activate
 PYTHON_BIN=${PYTHON_BIN:-python}
 
 if [[ -n "${ENV_ACTIVATE:-}" ]]; then
-    # Allow optional virtualenv/conda activation before running.
-    # Example: export ENV_ACTIVATE="$HOME/.venvs/twibot/bin/activate"
     # shellcheck disable=SC1090
     source "${ENV_ACTIVATE}"
 fi
@@ -50,9 +48,7 @@ if (( ${#missing_modules[@]} > 0 )); then
     exit 1
 fi
 
-read -r -a TRAIN_ARGS <<< "${TRAIN_ARGS:-}"
 read -r -a EVAL_ARGS <<< "${EVAL_ARGS:-}"
 
-"${PYTHON_BIN}" train.py --raw-data "${RAW_DATA}" --processed-dir "${PROCESSED_DIR}" --device "${DEVICE}" "${TRAIN_ARGS[@]}"
-
 "${PYTHON_BIN}" eval.py --raw-data "${RAW_DATA}" --processed-dir "${PROCESSED_DIR}" --device "${DEVICE}" --split "${EVAL_SPLIT}" "${EVAL_ARGS[@]}"
+
