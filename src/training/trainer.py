@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
@@ -29,7 +30,7 @@ class TrainingConfig:
     graph_heads: int = 4
     dropout: float = 0.3
     max_tweets_per_user: int = 8
-    text_model_name: str = "roberta-base"
+    text_model_name: str = "xlm-roberta-base"
     text_trainable: bool = False
     use_lora: bool = False
     lora_r: int = 8
@@ -123,7 +124,7 @@ class Trainer:
         total_examples = 0
 
         print(f"Starting epoch {epoch}...", flush=True)
-        for batch_idx, batch in enumerate(tqdm(loader, desc=f"Epoch {epoch}")):
+        for batch_idx, batch in enumerate(tqdm(loader, desc=f"Epoch {epoch}", file=sys.stdout)):
             batch = batch.to(self.device)
             user_nodes = batch["user"]
             batch_size = user_nodes.batch_size
@@ -178,7 +179,7 @@ class Trainer:
         all_labels = []
         all_logits = []
 
-        for batch in tqdm(loader, desc=f"Evaluating {split}"):
+        for batch in tqdm(loader, desc=f"Evaluating {split}", file=sys.stdout):
             batch = batch.to(self.device)
             user_nodes = batch["user"]
             batch_size = user_nodes.batch_size

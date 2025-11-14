@@ -6,7 +6,7 @@ from typing import Dict, Iterable, Tuple, Sequence
 import torch
 from torch import nn
 from torch_geometric.data import HeteroData
-from torch_geometric.nn import HeteroConv, LayerNorm, TransformerConv
+from torch_geometric.nn import HeteroConv, LayerNorm, TransformerConv, HGTConv
 
 
 class RelationalGraphLayer(nn.Module):
@@ -124,4 +124,97 @@ class RelationalGraphBackbone(nn.Module):
         for layer in self.layers:
             x_dict = layer(x_dict, data.edge_index_dict)
 
+        return x_dict
+
+
+class HGTBackbone(nn.Module):
+    """Heterogeneous Graph Transformer backbone (optional alternative to RGT).
+
+    Uses HGTConv layers over hetero graphs. Input node representations mirror
+    RelationalGraphBackbone: a learned embedding table for selected node types
+    (default: 'user'), and a single learnable type vector for other node types
+    to keep memory usage manageable.
+    """
+
+    def __init__(
+        self,
+        metadata: Tuple[Iterable[str], Iterable[Tuple[str, str, str]]],
+        num_nodes_dict: Dict[str, int],
+        hidden_dim: int = 256,
+        num_layers: int = 3,
+        heads: int = 4,
+        dropout: float = 0.1,
+        embed_node_types: Sequence[str] = ("user",),
+        use_type_vectors_for_others: bool = True,
+    ) -> None:
+        super().__init__()
+        node_types, _ = metadata
+        self.hidden_dim = hidden_dim
+
+        self.node_embeddings = nn.ModuleDict()
+        self.type_vectors = nn.ParameterDict()
+        embed_set = set(embed_node_types)
+        for ntype in node_types:
+            if ntype in embed_set:
+                self.node_embeddings[ntype] = nn.Embedding(num_nodes_dict[ntype], hidden_dim)
+            elif use_type_vectors_for_others:
+                self.type_vectors[ntype] = nn.Parameter(torch.empty(hidden_dim))
+                nn.init.xavier_uniform_(self.type_vectors[ntype].unsqueeze(0))
+
+        self.layers = nn.ModuleList(
+            [
+                HGTConv(
+                    in_channels=hidden_dim,
+                    out_channels=hidden_dim,
+                    metadata=metadata,
+                    heads=heads,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def reset_parameters(self) -> None:
+        for emb in self.node_embeddings.values():
+            nn.init.xavier_uniform_(emb.weight)
+        for tv in self.type_vectors.values():
+            nn.init.xavier_uniform_(tv.unsqueeze(0))
+        for layer in self.layers:
+            if hasattr(layer, "reset_parameters"):
+                layer.reset_parameters()
+
+    def _initial_x(self, data: HeteroData) -> Dict[str, torch.Tensor]:
+        x_dict: Dict[str, torch.Tensor] = {}
+        for node_type in data.node_types:
+            if node_type in self.node_embeddings:
+                embedding = self.node_embeddings[node_type]
+                if hasattr(data[node_type], "n_id"):
+                    node_idx = data[node_type].n_id
+                else:
+                    node_idx = torch.arange(
+                        data[node_type].num_nodes,
+                        device=embedding.weight.device,
+                        dtype=torch.long,
+                    )
+                x = embedding(node_idx.to(embedding.weight.device))
+            else:
+                if hasattr(data[node_type], "n_id"):
+                    node_count = data[node_type].n_id.numel()
+                else:
+                    node_count = data[node_type].num_nodes
+                device = next(self.parameters()).device
+                if node_type in self.type_vectors:
+                    tv = self.type_vectors[node_type].to(device)
+                else:
+                    tv = torch.zeros(self.hidden_dim, device=device)
+                x = tv.unsqueeze(0).expand(node_count, -1)
+            x_dict[node_type] = x
+        return x_dict
+
+    def forward(self, data: HeteroData) -> Dict[str, torch.Tensor]:
+        x_dict = self._initial_x(data)
+        for layer in self.layers:
+            x_dict = layer(x_dict, data.edge_index_dict)
+            for ntype in x_dict:
+                x_dict[ntype] = self.dropout(x_dict[ntype])
         return x_dict

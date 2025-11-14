@@ -8,7 +8,7 @@ import torch
 from transformers import AutoTokenizer
 
 from src.data import TwiBot22DataModule
-from src.models import ProfileFeatureEncoder, RelationalGraphBackbone, RobertaTextEncoder, TwiBotModel
+from src.models import ProfileFeatureEncoder, RelationalGraphBackbone, RobertaTextEncoder, TwiBotModel, HGTBackbone
 from src.training import TrainingConfig, Trainer
 from src.utils.losses import FocalLoss, WeightedCrossEntropy
 
@@ -37,10 +37,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--loss", choices=["focal", "weighted_ce"], default="focal")
     parser.add_argument("--gamma", type=float, default=1.5)
-    parser.add_argument("--text-model", type=str, default="roberta-base")
+    parser.add_argument("--text-model", type=str, default="xlm-roberta-base")
     parser.add_argument("--text-trainable", action="store_true")
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--rebuild", action="store_true", help="Rebuild processed artifacts before evaluation")
+    parser.add_argument("--use-hgt", action="store_true", help="Use HGT backbone instead of RGT")
     return parser.parse_args()
 
 
@@ -94,14 +95,24 @@ def main() -> None:
     metadata = graph.metadata()
     num_nodes_dict = graph.num_nodes_dict
 
-    graph_backbone = RelationalGraphBackbone(
-        metadata=metadata,
-        num_nodes_dict=num_nodes_dict,
-        hidden_dim=cfg.hidden_dim,
-        num_layers=cfg.num_layers,
-        heads=cfg.graph_heads,
-        dropout=cfg.dropout,
-    )
+    if args.use_hgt:
+        graph_backbone = HGTBackbone(
+            metadata=metadata,
+            num_nodes_dict=num_nodes_dict,
+            hidden_dim=cfg.hidden_dim,
+            num_layers=cfg.num_layers,
+            heads=cfg.graph_heads,
+            dropout=cfg.dropout,
+        )
+    else:
+        graph_backbone = RelationalGraphBackbone(
+            metadata=metadata,
+            num_nodes_dict=num_nodes_dict,
+            hidden_dim=cfg.hidden_dim,
+            num_layers=cfg.num_layers,
+            heads=cfg.graph_heads,
+            dropout=cfg.dropout,
+        )
 
     text_encoder = RobertaTextEncoder(
         model_name=cfg.text_model_name,

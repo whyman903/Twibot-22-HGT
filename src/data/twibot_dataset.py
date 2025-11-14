@@ -64,6 +64,7 @@ class PreprocessedDataPaths:
     labels_pt: Path
     splits_pt: Path
     texts_jsonl: Path
+    text_tokens_pt: Path
 
 
 def _iter_json_array(path: Path) -> Iterable[Mapping[str, object]]:
@@ -140,6 +141,14 @@ class TwiBot22GraphBuilder:
         self._labels: Dict[int, int] = {}
         self._split: Dict[int, str] = {}
 
+        # Tweet-level metadata to enable reply similarity/latency features
+        self._tweet_text: Dict[int, str] = {}
+        self._tweet_author_idx: Dict[int, int] = {}
+        self._tweet_created_ts: Dict[int, float] = {}
+        self._pending_replies: List[Tuple[int, int, int]] = []  # (user_idx, reply_tweet_idx, orig_tweet_idx)
+        self._user_reply_sims: Dict[int, List[float]] = defaultdict(list)
+        self._user_reply_lat_min: Dict[int, List[float]] = defaultdict(list)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -150,6 +159,7 @@ class TwiBot22GraphBuilder:
         self._index_auxiliary_nodes()
         self._load_labels_and_splits()
         self._collect_tweets()
+        self._compute_reply_aggregates()
         texts = self._materialize_user_texts()
         profile_matrix, scaler_stats = self._finalize_profile_features()
         graph = self._build_graph()
@@ -164,6 +174,7 @@ class TwiBot22GraphBuilder:
             labels_pt=self.processed_root / "user_labels.pt",
             splits_pt=self.processed_root / "user_splits.pt",
             texts_jsonl=self.processed_root / "user_texts.jsonl",
+            text_tokens_pt=self.processed_root / "user_text_tokens.pt",
         )
 
     # ------------------------------------------------------------------
@@ -286,6 +297,18 @@ class TwiBot22GraphBuilder:
                     except Exception:
                         timestamp = 0.0
                 text = str(record.get("text") or "")
+
+                # Persist tweet-level metadata for aggregates
+                t_id = record.get("id")
+                try:
+                    if t_id is not None and t_id in self._tweet_id_to_index:
+                        t_idx = self._tweet_id_to_index[t_id]
+                        self._tweet_author_idx[t_idx] = user_idx
+                        self._tweet_created_ts[t_idx] = timestamp
+                        self._tweet_text[t_idx] = text
+                except Exception:
+                    pass
+
                 heap = self._user_text_fragments[user_idx]
                 entry = (timestamp, text)
                 if len(heap) < self.max_tweets_per_user:
@@ -295,6 +318,47 @@ class TwiBot22GraphBuilder:
                     if entry[0] > heap[-1][0]:
                         heap[-1] = entry
                         heap.sort(key=lambda x: x[0], reverse=True)
+
+                # Track reply relations for later aggregation
+                referenced = record.get("referenced_tweets") or []
+                for ref in referenced:
+                    try:
+                        if ref and ref.get("type") == "replied_to":
+                            orig_id = ref.get("id")
+                            if orig_id is not None and orig_id in self._tweet_id_to_index and t_id is not None and t_id in self._tweet_id_to_index:
+                                reply_idx = self._tweet_id_to_index[t_id]
+                                orig_idx = self._tweet_id_to_index[orig_id]
+                                self._pending_replies.append((user_idx, reply_idx, orig_idx))
+                            break
+                    except Exception:
+                        continue
+
+    # --- Reply aggregates -------------------------------------------------
+    @staticmethod
+    def _jaccard_similarity(a: str, b: str) -> float:
+        a_tokens = set(a.lower().split())
+        b_tokens = set(b.lower().split())
+        if not a_tokens or not b_tokens:
+            return 0.0
+        inter = len(a_tokens & b_tokens)
+        union = len(a_tokens | b_tokens)
+        return float(inter / union) if union > 0 else 0.0
+
+    def _compute_reply_aggregates(self) -> None:
+        # Accumulate per-user similarity and latency (in minutes)
+        for user_idx, reply_idx, orig_idx in self._pending_replies:
+            r_text = self._tweet_text.get(reply_idx, "")
+            o_text = self._tweet_text.get(orig_idx, "")
+            if not r_text or not o_text:
+                continue
+            sim = self._jaccard_similarity(r_text, o_text)
+            r_ts = self._tweet_created_ts.get(reply_idx, None)
+            o_ts = self._tweet_created_ts.get(orig_idx, None)
+            if r_ts is None or o_ts is None:
+                continue
+            lat_min = max((r_ts - o_ts) / 60.0, 0.0)
+            self._user_reply_sims[user_idx].append(sim)
+            self._user_reply_lat_min[user_idx].append(lat_min)
 
     def _materialize_user_texts(self) -> List[str]:
         texts: List[str] = []
@@ -313,7 +377,31 @@ class TwiBot22GraphBuilder:
     def _finalize_profile_features(self) -> Tuple[torch.Tensor, Dict[str, List[float]]]:
         numeric = np.array(self._user_numeric_features, dtype=np.float32)
         binary = np.array(self._user_binary_features, dtype=np.float32)
-        numeric_log = np.vectorize(_safe_log1p)(numeric)
+
+        # Append per-user reply similarity/latency aggregates
+        num_users = numeric.shape[0]
+        extras: List[List[float]] = []
+        for u in range(num_users):
+            sims = self._user_reply_sims.get(u, [])
+            lats = self._user_reply_lat_min.get(u, [])
+            if sims:
+                sim_mean = float(np.mean(sims))
+                sim_p50 = float(np.percentile(sims, 50))
+                sim_p90 = float(np.percentile(sims, 90))
+                very_sim_share = float(np.mean(np.array(sims) >= 0.9))
+            else:
+                sim_mean = sim_p50 = sim_p90 = very_sim_share = 0.0
+            if lats:
+                lat_p50 = float(np.percentile(lats, 50))
+                lat_p90 = float(np.percentile(lats, 90))
+                fast_reply_rate = float(np.mean(np.array(lats) <= 5.0))
+            else:
+                lat_p50 = lat_p90 = fast_reply_rate = 0.0
+            extras.append([sim_mean, sim_p50, sim_p90, very_sim_share, lat_p50, lat_p90, fast_reply_rate])
+
+        extras_np = np.array(extras, dtype=np.float32) if extras else np.zeros((numeric.shape[0], 7), dtype=np.float32)
+        numeric_ext = np.concatenate([numeric, extras_np], axis=1)
+        numeric_log = np.vectorize(_safe_log1p)(numeric_ext)
 
         train_indices = [idx for idx, split in self._split.items() if split == "train"]
         scaler = StandardScaler()
@@ -448,13 +536,22 @@ class UserTextStore:
         tokenizer,
         max_length: int = 512,
         device: Optional[torch.device] = None,
+        encoded_tensors: Optional[Mapping[str, torch.Tensor]] = None,
     ) -> None:
         self._texts = texts
         self._tokenizer = tokenizer
         self._max_length = max_length
         self._device = device
+        self._encoded = dict(encoded_tensors) if encoded_tensors is not None else None
 
     def fetch(self, indices: Sequence[int]) -> Mapping[str, torch.Tensor]:
+        if self._encoded is not None:
+            idx = torch.as_tensor(indices, dtype=torch.long)
+            out: Dict[str, torch.Tensor] = {}
+            for k, v in self._encoded.items():
+                sel = v.index_select(0, idx)
+                out[k] = sel.to(self._device) if self._device is not None else sel
+            return out
         batch_texts = [self._texts[idx] if idx < len(self._texts) else "" for idx in indices]
         encoding = self._tokenizer(
             batch_texts,
@@ -529,7 +626,44 @@ class TwiBot22DataModule:
             self.user_ids = json.load(handle)
         texts = self._load_texts(paths.texts_jsonl)
         if self.tokenizer is not None:
-            self.text_store = UserTextStore(texts, tokenizer=self.tokenizer, max_length=self.text_max_length, device=self.device)
+            encoded: Optional[Dict[str, torch.Tensor]] = None
+            if paths.text_tokens_pt.exists():
+                try:
+                    encoded = _torch_load_compat(paths.text_tokens_pt)
+                except Exception:
+                    encoded = None
+            if encoded is None:
+                # Tokenize all texts once and cache to disk.
+                batch_size = 256
+                all_input_ids: List[torch.Tensor] = []
+                all_attention: List[torch.Tensor] = []
+                token_type_ids: List[torch.Tensor] = []
+                for start in range(0, len(texts), batch_size):
+                    batch = texts[start : start + batch_size]
+                    enc = self.tokenizer(
+                        batch,
+                        padding='max_length',
+                        truncation=True,
+                        max_length=self.text_max_length,
+                        return_tensors="pt",
+                    )
+                    all_input_ids.append(enc["input_ids"])
+                    all_attention.append(enc["attention_mask"])
+                    if "token_type_ids" in enc:
+                        token_type_ids.append(enc["token_type_ids"])
+                input_ids = torch.cat(all_input_ids, dim=0)
+                attention_mask = torch.cat(all_attention, dim=0)
+                encoded = {"input_ids": input_ids, "attention_mask": attention_mask}
+                if token_type_ids:
+                    encoded["token_type_ids"] = torch.cat(token_type_ids, dim=0)
+                torch.save(encoded, paths.text_tokens_pt)
+            self.text_store = UserTextStore(
+                texts,
+                tokenizer=self.tokenizer,
+                max_length=self.text_max_length,
+                device=self.device,
+                encoded_tensors=encoded,
+            )
         profile_features = _torch_load_compat(paths.profile_features_pt)
         self.profile_store = ProfileFeatureStore(profile_features, device=self.device)
         self.labels = _torch_load_compat(paths.labels_pt)
