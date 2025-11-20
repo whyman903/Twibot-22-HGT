@@ -35,6 +35,11 @@ PROCESSED_DIR=${PROCESSED_DIR:-processed}
 DEVICE=${DEVICE:-cuda}
 EVAL_SPLIT=${EVAL_SPLIT:-test}
 
+# HGT and defaults
+USE_HGT=${USE_HGT:-1}
+HGT_BATCH_SIZE=${HGT_BATCH_SIZE:-256}
+HGT_NUM_NEIGHBORS=${HGT_NUM_NEIGHBORS:-"20 20"}
+
 missing_modules=()
 for module in torch transformers torch_geometric; do
     if ! "${PYTHON_BIN}" -c "import ${module}" >/dev/null 2>&1; then
@@ -50,5 +55,25 @@ fi
 
 read -r -a EVAL_ARGS <<< "${EVAL_ARGS:-}"
 
+# Append HGT flags unless explicitly overridden
+if [[ "${USE_HGT}" == "1" ]]; then
+  if [[ ! " ${EVAL_ARGS[*]} " =~ " --use-hgt " ]]; then
+    EVAL_ARGS+=("--use-hgt")
+  fi
+  if [[ ! " ${EVAL_ARGS[*]} " =~ " --batch-size " ]]; then
+    EVAL_ARGS+=("--batch-size" "${HGT_BATCH_SIZE}")
+  fi
+  if [[ ! " ${EVAL_ARGS[*]} " =~ " --num-neighbors " ]]; then
+    # shellcheck disable=SC2206
+    EVAL_ARGS+=(--num-neighbors ${HGT_NUM_NEIGHBORS})
+  fi
+fi
+
 "${PYTHON_BIN}" eval.py --raw-data "${RAW_DATA}" --processed-dir "${PROCESSED_DIR}" --device "${DEVICE}" --split "${EVAL_SPLIT}" "${EVAL_ARGS[@]}"
+
+
+
+
+
+
 

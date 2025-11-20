@@ -28,13 +28,11 @@ class RobertaTextEncoder(nn.Module):
             cfg.add_pooling_layer = False
         self.model = AutoModel.from_pretrained(model_name, config=cfg)
 
-        # Track whether the backbone is frozen (no trainable params in this module)
-        self._frozen = (not trainable) and (not use_lora)
-        if self._frozen:
+        # Optionally freeze the backbone weights; LoRA adapters (if enabled)
+        # will be trainable on top of the frozen base.
+        if not trainable:
             for param in self.model.parameters():
                 param.requires_grad = False
-            # Ensure deterministic behavior (disable dropout etc.) when frozen
-            self.model.eval()
 
         self.hidden_size = self.model.config.hidden_size
         self.dropout = nn.Dropout(dropout)
@@ -57,6 +55,12 @@ class RobertaTextEncoder(nn.Module):
                 task_type=TaskType.FEATURE_EXTRACTION,
             )
             self.model = get_peft_model(self.model, lora_cfg)
+
+        # Consider the encoder fully frozen only if no parameters require grad.
+        self._frozen = not any(p.requires_grad for p in self.model.parameters())
+        if self._frozen:
+            # Ensure deterministic behavior (disable dropout etc.) when frozen
+            self.model.eval()
 
     def forward(self, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         if self._frozen:

@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-model", type=str, default="xlm-roberta-base")
     parser.add_argument("--text-trainable", action="store_true")
     parser.add_argument("--use-lora", action="store_true")
+    parser.add_argument("--enable-tweet-text", action="store_true", help="Load/compute tweet text embeddings for tweet nodes")
+    parser.add_argument("--tweet-text-model", type=str, default=None, help="Optional HF model for tweet embeddings (defaults to --text-model when enabled)")
+    parser.add_argument("--tweet-text-max-length", type=int, default=96)
+    parser.add_argument("--tweet-text-batch-size", type=int, default=512)
     parser.add_argument("--rebuild", action="store_true", help="Rebuild processed artifacts before evaluation")
     parser.add_argument("--use-hgt", action="store_true", help="Use HGT backbone instead of RGT")
     return parser.parse_args()
@@ -52,6 +56,10 @@ def main() -> None:
     checkpoint_path = args.checkpoint or (args.processed_dir / "best_model.pt")
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    tweet_text_model = None
+    if args.enable_tweet_text:
+        tweet_text_model = args.tweet_text_model or args.text_model
 
     cfg = TrainingConfig(
         raw_data_dir=args.raw_data,
@@ -73,6 +81,9 @@ def main() -> None:
         epochs=0,
         patience=0,
         text_max_length=args.text_max_length,
+        tweet_text_model_name=tweet_text_model,
+        tweet_text_max_length=args.tweet_text_max_length,
+        tweet_text_batch_size=args.tweet_text_batch_size,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.text_model_name)
@@ -84,6 +95,9 @@ def main() -> None:
         tokenizer=tokenizer,
         text_max_length=cfg.text_max_length,
         device=device,
+        tweet_text_model_name=cfg.tweet_text_model_name,
+        tweet_text_max_length=cfg.tweet_text_max_length,
+        tweet_text_batch_size=cfg.tweet_text_batch_size,
     )
     data_module.prepare_data(rebuild=args.rebuild)
     data_module.setup()
@@ -94,6 +108,7 @@ def main() -> None:
 
     metadata = graph.metadata()
     num_nodes_dict = graph.num_nodes_dict
+    node_feature_dims = data_module.get_node_feature_dims()
 
     if args.use_hgt:
         graph_backbone = HGTBackbone(
@@ -103,6 +118,7 @@ def main() -> None:
             num_layers=cfg.num_layers,
             heads=cfg.graph_heads,
             dropout=cfg.dropout,
+            node_feature_dims=node_feature_dims,
         )
     else:
         graph_backbone = RelationalGraphBackbone(
@@ -112,6 +128,7 @@ def main() -> None:
             num_layers=cfg.num_layers,
             heads=cfg.graph_heads,
             dropout=cfg.dropout,
+            node_feature_dims=node_feature_dims,
         )
 
     text_encoder = RobertaTextEncoder(

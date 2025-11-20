@@ -1,11 +1,12 @@
 """Training loop and configuration for the TwiBot-22 model."""
 from __future__ import annotations
 
+import json
 import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
 from torch import nn
@@ -26,17 +27,20 @@ class TrainingConfig:
     batch_size: int = 8192
     num_neighbors: tuple[int, int] = (20, 20)
     num_layers: int = 3
-    hidden_dim: int = 256
+    hidden_dim: int = 384
     graph_heads: int = 4
     dropout: float = 0.3
-    max_tweets_per_user: int = 8
+    max_tweets_per_user: int = -1
     text_model_name: str = "xlm-roberta-base"
     text_trainable: bool = False
     use_lora: bool = False
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05
-    epochs: int = 20
+    tweet_text_model_name: Optional[str] = None
+    tweet_text_max_length: int = 96
+    tweet_text_batch_size: int = 512
+    epochs: int = 10
     patience: int = 5
     lr_backbone: float = 3e-4
     lr_text: float = 5e-5
@@ -49,6 +53,8 @@ class TrainingConfig:
     num_workers: int = 0
     pin_memory: bool = True
     text_max_length: int = 512
+    max_grad_norm: float = 1.0  # Gradient clipping threshold
+    resume: bool = False
 
 
 class Trainer:
@@ -75,31 +81,59 @@ class Trainer:
         self.writer: Optional[SummaryWriter] = None
         if config.log_dir is not None:
             self.writer = SummaryWriter(log_dir=str(config.log_dir))
+        
+        # Track history for JSON export
+        self.history: List[Dict] = []
+
+        self.start_epoch = 1
+        self.best_metric = -math.inf
+        self.best_epoch = -1
+
+        if self.cfg.resume:
+            self._resume_from_checkpoint()
 
     def train(self) -> None:
         print("Starting training...", flush=True)
-        best_metric = -math.inf
-        best_epoch = -1
-        for epoch in range(1, self.cfg.epochs + 1):
+        
+        for epoch in range(self.start_epoch, self.cfg.epochs + 1):
             train_stats = self._run_epoch(epoch)
             val_stats = self._evaluate(split="valid")
             val_auprc = val_stats.get("auprc", float("nan"))
 
+            # Log to TensorBoard
             if self.writer is not None:
                 for key, value in train_stats.items():
                     self.writer.add_scalar(f"train/{key}", value, epoch)
                 for key, value in val_stats.items():
                     self.writer.add_scalar(f"val/{key}", value, epoch)
 
-            print(f"Epoch {epoch}: train_loss={train_stats['loss']:.4f} val_auprc={val_auprc:.4f}")
+            # Store for JSON export
+            self.history.append({
+                "epoch": epoch,
+                "train": train_stats,
+                "val": val_stats
+            })
 
-            if val_auprc > best_metric:
-                best_metric = val_auprc
-                best_epoch = epoch
-                self._save_checkpoint(epoch)
-            elif epoch - best_epoch >= self.cfg.patience:
+            # Print summary
+            print(f"Epoch {epoch}: train_loss={train_stats['loss']:.4f} | "
+                  f"val_loss={val_stats.get('loss', float('nan')):.4f} "
+                  f"val_auprc={val_auprc:.4f} "
+                  f"val_f1={val_stats.get('f1', float('nan')):.4f}")
+
+            if val_auprc > self.best_metric:
+                self.best_metric = val_auprc
+                self.best_epoch = epoch
+                self._save_checkpoint(epoch, is_best=True)
+            elif epoch - self.best_epoch >= self.cfg.patience:
                 print("Early stopping triggered.")
                 break
+            
+            # Save latest checkpoint
+            self._save_checkpoint(epoch, is_best=False)
+        
+        # Save metrics to JSON
+        self._save_metrics_json()
+        print(f"Training complete. Best val AUPRC: {self.best_metric:.4f} at epoch {self.best_epoch}")
 
 
     def evaluate(self, split: str = "test") -> Dict[str, float]:
@@ -122,9 +156,10 @@ class Trainer:
 
         total_loss = 0.0
         total_examples = 0
+        finite_batches = 0
 
         print(f"Starting epoch {epoch}...", flush=True)
-        for batch_idx, batch in enumerate(tqdm(loader, desc=f"Epoch {epoch}", file=sys.stdout)):
+        for batch_idx, batch in enumerate(tqdm(loader, desc=f"Epoch {epoch}", file=sys.stdout, miniters=100)):
             batch = batch.to(self.device)
             user_nodes = batch["user"]
             batch_size = user_nodes.batch_size
@@ -144,13 +179,27 @@ class Trainer:
             for opt in self.optimizers.values():
                 opt.zero_grad(set_to_none=True)
 
+            node_features = self.data_module.fetch_node_features(batch, self.device)
+
             with amp.autocast("cuda", enabled=self.scaler.is_enabled() and self.device.type == "cuda"):
-                logits = self.model(batch, text_inputs, profile_features)
+                logits = self.model(batch, text_inputs, profile_features, node_features=node_features)
                 logits = logits[mask]
                 labels = labels_full[mask]
                 loss = self.criterion(logits, labels)
 
+            if not torch.isfinite(loss):
+                print(f"Non-finite loss detected at epoch {epoch}, batch {batch_idx}: {loss.item()}", flush=True)
+                continue
+
             self.scaler.scale(loss).backward()
+
+            # Gradient clipping to prevent exploding gradients / NaNs.
+            for name, opt in self.optimizers.items():
+                self.scaler.unscale_(opt)
+                torch.nn.utils.clip_grad_norm_(
+                    [p for group in opt.param_groups for p in group["params"] if p.requires_grad],
+                    max_norm=self.cfg.max_grad_norm,
+                )
 
             for opt in self.optimizers.values():
                 self.scaler.step(opt)
@@ -158,8 +207,12 @@ class Trainer:
 
             total_loss += loss.item() * labels.size(0)
             total_examples += labels.size(0)
+            finite_batches += 1
 
-        avg_loss = total_loss / max(total_examples, 1)
+        if finite_batches == 0:
+            avg_loss = float("nan")
+        else:
+            avg_loss = total_loss / max(total_examples, 1)
         return {"loss": avg_loss}
 
     @torch.no_grad()
@@ -179,7 +232,7 @@ class Trainer:
         all_labels = []
         all_logits = []
 
-        for batch in tqdm(loader, desc=f"Evaluating {split}", file=sys.stdout):
+        for batch in tqdm(loader, desc=f"Evaluating {split}", file=sys.stdout, miniters=100):
             batch = batch.to(self.device)
             user_nodes = batch["user"]
             batch_size = user_nodes.batch_size
@@ -196,7 +249,8 @@ class Trainer:
             text_inputs = self.data_module.text_store.fetch(input_nodes.cpu().tolist())
             profile_features = self.data_module.profile_store.fetch(input_nodes.cpu().tolist()).to(self.device)
 
-            logits = self.model(batch, text_inputs, profile_features)
+            node_features = self.data_module.fetch_node_features(batch, self.device)
+            logits = self.model(batch, text_inputs, profile_features, node_features=node_features)
             logits = logits[mask]
             labels = labels_full[mask]
 
@@ -216,11 +270,60 @@ class Trainer:
         metrics["loss"] = float(loss.item())
         return metrics
 
-    def _save_checkpoint(self, epoch: int) -> None:
-        checkpoint_path = Path(self.cfg.processed_data_dir) / "best_model.pt"
+    def _save_checkpoint(self, epoch: int, is_best: bool = False) -> None:
         checkpoint = {
             "epoch": epoch,
             "model_state": self.model.state_dict(),
+            "optimizer_states": {k: v.state_dict() for k, v in self.optimizers.items()},
+            "best_metric": self.best_metric,
+            "best_epoch": self.best_epoch,
+            "history": self.history,
         }
-        torch.save(checkpoint, checkpoint_path)
-        print(f"Saved checkpoint to {checkpoint_path}")
+        
+        # Save scaler state if mixed precision is used
+        if self.scaler.is_enabled():
+            checkpoint["scaler_state"] = self.scaler.state_dict()
+
+        # Save latest checkpoint
+        last_path = Path(self.cfg.processed_data_dir) / "last_checkpoint.pt"
+        torch.save(checkpoint, last_path)
+        # print(f"Saved latest checkpoint to {last_path}") # Reduce verbosity
+
+        if is_best:
+            best_path = Path(self.cfg.processed_data_dir) / "best_model.pt"
+            torch.save(checkpoint, best_path)
+            print(f"Saved best checkpoint to {best_path}")
+
+    def _resume_from_checkpoint(self) -> None:
+        last_path = Path(self.cfg.processed_data_dir) / "last_checkpoint.pt"
+        if not last_path.exists():
+            print(f"No checkpoint found at {last_path}. Starting from scratch.")
+            return
+        
+        print(f"Loading checkpoint from {last_path}...")
+        checkpoint = torch.load(last_path, map_location=self.device)
+        
+        self.model.load_state_dict(checkpoint["model_state"])
+        for name, opt in self.optimizers.items():
+            if name in checkpoint["optimizer_states"]:
+                opt.load_state_dict(checkpoint["optimizer_states"][name])
+        
+        if "scaler_state" in checkpoint and self.scaler.is_enabled():
+            self.scaler.load_state_dict(checkpoint["scaler_state"])
+            
+        self.start_epoch = checkpoint["epoch"] + 1
+        self.best_metric = checkpoint.get("best_metric", -math.inf)
+        self.best_epoch = checkpoint.get("best_epoch", -1)
+        self.history = checkpoint.get("history", [])
+        
+        print(f"Resumed from epoch {checkpoint['epoch']} (Next epoch: {self.start_epoch})")
+    
+    def _save_metrics_json(self) -> None:
+        """Save training history to JSON for easy plotting."""
+        if self.cfg.log_dir is None:
+            return
+        
+        metrics_file = Path(self.cfg.log_dir) / "metrics.json"
+        with open(metrics_file, 'w') as f:
+            json.dump(self.history, f, indent=2)
+        print(f"Metrics saved to {metrics_file}")

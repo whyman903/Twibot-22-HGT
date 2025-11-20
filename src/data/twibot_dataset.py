@@ -16,6 +16,7 @@ import numpy as np
 import torch
 from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import HeteroData
+from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 # Mapping between raw relation names and (source_node_type, relation_name, target_node_type)
 RELATION_SCHEMA: Mapping[str, Tuple[str, str, str]] = {
@@ -65,6 +66,7 @@ class PreprocessedDataPaths:
     splits_pt: Path
     texts_jsonl: Path
     text_tokens_pt: Path
+    tweet_text_embeddings_pt: Path
 
 
 def _iter_json_array(path: Path) -> Iterable[Mapping[str, object]]:
@@ -117,13 +119,19 @@ class TwiBot22GraphBuilder:
         self,
         raw_root: Path,
         processed_root: Path,
-        max_tweets_per_user: int = 8,
+        max_tweets_per_user: int = -1,
         text_concat_separator: str = " \n",
+        tweet_text_model_name: Optional[str] = None,
+        tweet_text_max_length: int = 96,
+        tweet_text_batch_size: int = 512,
     ) -> None:
         self.raw_root = Path(raw_root)
         self.processed_root = Path(processed_root)
         self.max_tweets_per_user = max_tweets_per_user
         self.text_concat_separator = text_concat_separator
+        self.tweet_text_model_name = tweet_text_model_name
+        self.tweet_text_max_length = tweet_text_max_length
+        self.tweet_text_batch_size = tweet_text_batch_size
 
         self.processed_root.mkdir(parents=True, exist_ok=True)
 
@@ -148,6 +156,7 @@ class TwiBot22GraphBuilder:
         self._pending_replies: List[Tuple[int, int, int]] = []  # (user_idx, reply_tweet_idx, orig_tweet_idx)
         self._user_reply_sims: Dict[int, List[float]] = defaultdict(list)
         self._user_reply_lat_min: Dict[int, List[float]] = defaultdict(list)
+        self._tweets_for_text_features: set[int] = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -160,10 +169,11 @@ class TwiBot22GraphBuilder:
         self._load_labels_and_splits()
         self._collect_tweets()
         self._compute_reply_aggregates()
+        tweet_text_embeddings = self._encode_tweet_text_features()
         texts = self._materialize_user_texts()
         profile_matrix, scaler_stats = self._finalize_profile_features()
         graph = self._build_graph()
-        self._persist_artifacts(graph, texts, profile_matrix, scaler_stats)
+        self._persist_artifacts(graph, texts, profile_matrix, scaler_stats, tweet_text_embeddings)
 
     def get_processed_paths(self) -> PreprocessedDataPaths:
         return PreprocessedDataPaths(
@@ -175,6 +185,7 @@ class TwiBot22GraphBuilder:
             splits_pt=self.processed_root / "user_splits.pt",
             texts_jsonl=self.processed_root / "user_texts.jsonl",
             text_tokens_pt=self.processed_root / "user_text_tokens.pt",
+            tweet_text_embeddings_pt=self.processed_root / "tweet_text_embeddings.pt",
         )
 
     # ------------------------------------------------------------------
@@ -311,25 +322,47 @@ class TwiBot22GraphBuilder:
 
                 heap = self._user_text_fragments[user_idx]
                 entry = (timestamp, text)
-                if len(heap) < self.max_tweets_per_user:
+                # If max_tweets_per_user <= 0, keep all tweets for the user.
+                if self.max_tweets_per_user is None or self.max_tweets_per_user <= 0:
                     heap.append(entry)
-                    heap.sort(key=lambda x: x[0], reverse=True)
                 else:
-                    if entry[0] > heap[-1][0]:
-                        heap[-1] = entry
+                    if len(heap) < self.max_tweets_per_user:
+                        heap.append(entry)
                         heap.sort(key=lambda x: x[0], reverse=True)
+                    else:
+                        if entry[0] > heap[-1][0]:
+                            heap[-1] = entry
+                            heap.sort(key=lambda x: x[0], reverse=True)
 
                 # Track reply relations for later aggregation
                 referenced = record.get("referenced_tweets") or []
                 for ref in referenced:
                     try:
-                        if ref and ref.get("type") == "replied_to":
-                            orig_id = ref.get("id")
-                            if orig_id is not None and orig_id in self._tweet_id_to_index and t_id is not None and t_id in self._tweet_id_to_index:
-                                reply_idx = self._tweet_id_to_index[t_id]
-                                orig_idx = self._tweet_id_to_index[orig_id]
-                                self._pending_replies.append((user_idx, reply_idx, orig_idx))
+                        if not ref:
+                            continue
+                        ref_type = ref.get("type")
+                        orig_id = ref.get("id")
+                        if (
+                            ref_type == "replied_to"
+                            and orig_id is not None
+                            and orig_id in self._tweet_id_to_index
+                            and t_id is not None
+                            and t_id in self._tweet_id_to_index
+                        ):
+                            reply_idx = self._tweet_id_to_index[t_id]
+                            orig_idx = self._tweet_id_to_index[orig_id]
+                            self._pending_replies.append((user_idx, reply_idx, orig_idx))
+                            self._tweets_for_text_features.add(reply_idx)
+                            self._tweets_for_text_features.add(orig_idx)
                             break
+                        if (
+                            ref_type in {"retweeted", "quoted"}
+                            and orig_id is not None
+                            and orig_id in self._tweet_id_to_index
+                        ):
+                            if t_id is not None and t_id in self._tweet_id_to_index:
+                                self._tweets_for_text_features.add(self._tweet_id_to_index[t_id])
+                            self._tweets_for_text_features.add(self._tweet_id_to_index[orig_id])
                     except Exception:
                         continue
 
@@ -359,6 +392,50 @@ class TwiBot22GraphBuilder:
             lat_min = max((r_ts - o_ts) / 60.0, 0.0)
             self._user_reply_sims[user_idx].append(sim)
             self._user_reply_lat_min[user_idx].append(lat_min)
+
+    def _encode_tweet_text_features(self) -> Optional[Dict[str, torch.Tensor]]:
+        if not self.tweet_text_model_name:
+            return None
+
+        target_indices = sorted(self._tweets_for_text_features)
+        if not target_indices:
+            return None
+
+        tokenizer = AutoTokenizer.from_pretrained(self.tweet_text_model_name)
+        config = AutoConfig.from_pretrained(self.tweet_text_model_name)
+        if hasattr(config, "add_pooling_layer"):
+            config.add_pooling_layer = False
+        model = AutoModel.from_pretrained(self.tweet_text_model_name, config=config)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
+        model.eval()
+
+        hidden = model.config.hidden_size
+        storage = torch.empty((len(target_indices), hidden), dtype=torch.float16)
+
+        batch_size = self.tweet_text_batch_size
+        with torch.no_grad():
+            for start in range(0, len(target_indices), batch_size):
+                batch_indices = target_indices[start : start + batch_size]
+                texts = [self._tweet_text.get(idx, "") for idx in batch_indices]
+                tokens = tokenizer(
+                    texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=self.tweet_text_max_length,
+                    return_tensors="pt",
+                )
+                tokens = {k: v.to(device) for k, v in tokens.items()}
+                outputs = model(**tokens)
+                hidden_states = outputs.last_hidden_state
+                mask = tokens["attention_mask"].unsqueeze(-1)
+                pooled = (hidden_states * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+                storage[start : start + len(batch_indices)] = pooled.detach().cpu().to(torch.float16)
+
+        return {
+            "indices": torch.tensor(target_indices, dtype=torch.long),
+            "embeddings": storage,
+        }
 
     def _materialize_user_texts(self) -> List[str]:
         texts: List[str] = []
@@ -477,6 +554,7 @@ class TwiBot22GraphBuilder:
         texts: Sequence[str],
         profile_features: torch.Tensor,
         scaler_stats: Mapping[str, Sequence[float]],
+        tweet_text_embeddings: Optional[Dict[str, torch.Tensor]],
     ) -> None:
         paths = self.get_processed_paths()
         torch.save(graph, paths.graph_pt)
@@ -511,6 +589,15 @@ class TwiBot22GraphBuilder:
                     "text": text,
                 }
                 handle.write(json.dumps(payload) + "\n")
+
+        if tweet_text_embeddings is not None:
+            artifact = {
+                "indices": tweet_text_embeddings["indices"],
+                "embeddings": tweet_text_embeddings["embeddings"],
+                "model_name": self.tweet_text_model_name,
+                "max_length": self.tweet_text_max_length,
+            }
+            torch.save(artifact, paths.tweet_text_embeddings_pt)
 
     # ------------------------------------------------------------------
     # Utility helpers
@@ -579,6 +666,41 @@ class ProfileFeatureStore:
         return feat
 
 
+class TweetFeatureStore:
+    """Lookup for tweet-level text embeddings used by the graph backbone."""
+
+    def __init__(
+        self,
+        indices: torch.Tensor,
+        embeddings: torch.Tensor,
+        device: Optional[torch.device] = None,
+    ) -> None:
+        if indices.ndim != 1:
+            raise ValueError("Tweet indices tensor must be 1-D")
+        order = torch.argsort(indices)
+        self._indices = indices[order].long()
+        self._embeddings = embeddings[order]
+        self._device = device
+
+    @property
+    def feature_dim(self) -> int:
+        return int(self._embeddings.shape[1])
+
+    def fetch(self, indices: Sequence[int] | torch.Tensor) -> torch.Tensor:
+        idx_tensor = torch.as_tensor(indices, dtype=torch.long)
+        if idx_tensor.numel() == 0:
+            return torch.empty((0, self.feature_dim), dtype=torch.float32, device=self._device)
+        search_indices = idx_tensor.to(self._indices.device)
+        pos = torch.searchsorted(self._indices, search_indices)
+        matched = (pos < self._indices.numel()) & (self._indices[pos] == search_indices)
+        out = torch.zeros((idx_tensor.numel(), self.feature_dim), dtype=torch.float32)
+        if matched.any():
+            out[matched] = self._embeddings[pos[matched]].to(torch.float32)
+        if self._device is not None:
+            out = out.to(self._device)
+        return out
+
+
 class TwiBot22DataModule:
     """High-level convenience wrapper for loading all processed artifacts."""
 
@@ -586,22 +708,34 @@ class TwiBot22DataModule:
         self,
         raw_root: Path,
         processed_root: Path,
-        max_tweets_per_user: int = 8,
+        max_tweets_per_user: int = -1,
         tokenizer=None,
         text_max_length: int = 512,
         device: Optional[torch.device] = None,
+        tweet_text_model_name: Optional[str] = None,
+        tweet_text_max_length: int = 96,
+        tweet_text_batch_size: int = 512,
     ) -> None:
         self.raw_root = Path(raw_root)
         self.processed_root = Path(processed_root)
-        self.builder = TwiBot22GraphBuilder(raw_root, processed_root, max_tweets_per_user)
+        self.builder = TwiBot22GraphBuilder(
+            raw_root,
+            processed_root,
+            max_tweets_per_user,
+            tweet_text_model_name=tweet_text_model_name,
+            tweet_text_max_length=tweet_text_max_length,
+            tweet_text_batch_size=tweet_text_batch_size,
+        )
         self.tokenizer = tokenizer
         self.text_max_length = text_max_length
         self.device = device
+        self.tweet_text_model_name = tweet_text_model_name
 
         self.graph: Optional[HeteroData] = None
         self.user_ids: Optional[List[str]] = None
         self.text_store: Optional[UserTextStore] = None
         self.profile_store: Optional[ProfileFeatureStore] = None
+        self.tweet_feature_store: Optional[TweetFeatureStore] = None
         self.labels: Optional[torch.Tensor] = None
         self.splits: Optional[torch.Tensor] = None
 
@@ -669,6 +803,15 @@ class TwiBot22DataModule:
         self.labels = _torch_load_compat(paths.labels_pt)
         self.splits = _torch_load_compat(paths.splits_pt)
 
+        if self.tweet_text_model_name is not None and paths.tweet_text_embeddings_pt.exists():
+            payload = _torch_load_compat(paths.tweet_text_embeddings_pt)
+            indices = payload.get("indices")
+            embeddings = payload.get("embeddings")
+            if isinstance(indices, torch.Tensor) and isinstance(embeddings, torch.Tensor):
+                self.tweet_feature_store = TweetFeatureStore(indices, embeddings, device=self.device)
+            else:
+                self.tweet_feature_store = None
+
     def _load_texts(self, path: Path) -> List[str]:
         texts: List[str] = []
         with path.open("r", encoding="utf-8") as handle:
@@ -695,3 +838,17 @@ class TwiBot22DataModule:
             raise KeyError(f"Unknown split: {split}")
         split_value = split_lookup[split]
         return (self.splits == split_value).nonzero(as_tuple=False).view(-1)
+
+    def get_node_feature_dims(self) -> Dict[str, int]:
+        dims: Dict[str, int] = {}
+        if self.tweet_feature_store is not None:
+            dims["tweet"] = self.tweet_feature_store.feature_dim
+        return dims
+
+    def fetch_node_features(self, batch: HeteroData, device: torch.device) -> Dict[str, torch.Tensor]:
+        features: Dict[str, torch.Tensor] = {}
+        if self.tweet_feature_store is not None and "tweet" in batch.node_types:
+            n_id = batch["tweet"].n_id
+            feats = self.tweet_feature_store.fetch(n_id)
+            features["tweet"] = feats.to(device)
+        return features

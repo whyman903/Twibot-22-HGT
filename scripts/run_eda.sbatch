@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=twibot_eda
-#SBATCH --output=logs/twibot_train_eval_%j.log
-#SBATCH --error=logs/twibot_train_eval_%j.err
+#SBATCH --output=logs/twibot_eda_%j.log
+#SBATCH --error=logs/twibot_eda_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8

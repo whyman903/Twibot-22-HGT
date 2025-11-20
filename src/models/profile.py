@@ -13,7 +13,7 @@ class ProfileFeatureEncoder(nn.Module):
     def __init__(
         self,
         input_dim: int,
-        hidden_dims: Sequence[int] = (64, 32),
+        hidden_dims: Sequence[int] = (128, 64),
         dropout: float = 0.3,
     ) -> None:
         super().__init__()
@@ -21,6 +21,7 @@ class ProfileFeatureEncoder(nn.Module):
         layers = []
         for in_dim, out_dim in zip(dims[:-1], dims[1:]):
             layers.append(nn.Linear(in_dim, out_dim))
+            layers.append(nn.LayerNorm(out_dim))
             layers.append(nn.ReLU(inplace=True))
             layers.append(nn.Dropout(dropout))
         self.mlp = nn.Sequential(*layers)

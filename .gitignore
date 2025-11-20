@@ -3,6 +3,8 @@ logs/
 processed/
 TwiBot-22/
 eda_outputs/
+runs/
+
 *.zip
 *.tar.gz
 *.tar.bz2

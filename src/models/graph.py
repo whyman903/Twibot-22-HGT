@@ -1,7 +1,7 @@
 """Graph backbone built on top of a relational graph transformer."""
 from __future__ import annotations
 
-from typing import Dict, Iterable, Tuple, Sequence
+from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 import torch
 from torch import nn
@@ -60,6 +60,7 @@ class RelationalGraphBackbone(nn.Module):
         dropout: float = 0.1,
         embed_node_types: Sequence[str] = ("user",),
         use_type_vectors_for_others: bool = True,
+        node_feature_dims: Optional[Mapping[str, int]] = None,
     ) -> None:
         super().__init__()
         node_types, _ = metadata
@@ -68,7 +69,10 @@ class RelationalGraphBackbone(nn.Module):
         self.node_embeddings = nn.ModuleDict()
         self.type_vectors = nn.ParameterDict()
         embed_set = set(embed_node_types)
+        feature_dims = dict(node_feature_dims or {})
         for ntype in node_types:
+            if ntype in feature_dims:
+                continue
             if ntype in embed_set:
                 self.node_embeddings[ntype] = nn.Embedding(num_nodes_dict[ntype], hidden_dim)
             elif use_type_vectors_for_others:
@@ -79,6 +83,9 @@ class RelationalGraphBackbone(nn.Module):
             [RelationalGraphLayer(metadata, hidden_dim, heads=heads, dropout=dropout) for _ in range(num_layers)]
         )
         self.dropout = nn.Dropout(dropout)
+        self.feature_projectors = nn.ModuleDict(
+            {ntype: nn.Linear(dim, hidden_dim) for ntype, dim in feature_dims.items()}
+        )
 
     def reset_parameters(self) -> None:
         for emb in self.node_embeddings.values():
@@ -90,11 +97,21 @@ class RelationalGraphBackbone(nn.Module):
                 if hasattr(module, "reset_parameters"):
                     module.reset_parameters()
 
-    def forward(self, data: HeteroData) -> Dict[str, torch.Tensor]:
+    def forward(
+        self,
+        data: HeteroData,
+        node_features: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Dict[str, torch.Tensor]:
         x_dict: Dict[str, torch.Tensor] = {}
         # Produce per-node inputs for all node types, using either a lookup or a shared type vector
         for node_type in data.node_types:
-            if node_type in self.node_embeddings:
+            if node_features is not None and node_type in node_features:
+                projector = self.feature_projectors.get(node_type)
+                if projector is None:
+                    raise ValueError(f"No projector registered for features of node type '{node_type}'")
+                feats = node_features[node_type]
+                x = projector(feats)
+            elif node_type in self.node_embeddings:
                 embedding = self.node_embeddings[node_type]
                 if hasattr(data[node_type], "n_id"):
                     node_idx = data[node_type].n_id
@@ -146,6 +163,7 @@ class HGTBackbone(nn.Module):
         dropout: float = 0.1,
         embed_node_types: Sequence[str] = ("user",),
         use_type_vectors_for_others: bool = True,
+        node_feature_dims: Optional[Mapping[str, int]] = None,
     ) -> None:
         super().__init__()
         node_types, _ = metadata
@@ -154,7 +172,10 @@ class HGTBackbone(nn.Module):
         self.node_embeddings = nn.ModuleDict()
         self.type_vectors = nn.ParameterDict()
         embed_set = set(embed_node_types)
+        feature_dims = dict(node_feature_dims or {})
         for ntype in node_types:
+            if ntype in feature_dims:
+                continue
             if ntype in embed_set:
                 self.node_embeddings[ntype] = nn.Embedding(num_nodes_dict[ntype], hidden_dim)
             elif use_type_vectors_for_others:
@@ -173,6 +194,9 @@ class HGTBackbone(nn.Module):
             ]
         )
         self.dropout = nn.Dropout(dropout)
+        self.feature_projectors = nn.ModuleDict(
+            {ntype: nn.Linear(dim, hidden_dim) for ntype, dim in feature_dims.items()}
+        )
 
     def reset_parameters(self) -> None:
         for emb in self.node_embeddings.values():
@@ -183,10 +207,20 @@ class HGTBackbone(nn.Module):
             if hasattr(layer, "reset_parameters"):
                 layer.reset_parameters()
 
-    def _initial_x(self, data: HeteroData) -> Dict[str, torch.Tensor]:
+    def _initial_x(
+        self,
+        data: HeteroData,
+        node_features: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Dict[str, torch.Tensor]:
         x_dict: Dict[str, torch.Tensor] = {}
         for node_type in data.node_types:
-            if node_type in self.node_embeddings:
+            if node_features is not None and node_type in node_features:
+                projector = self.feature_projectors.get(node_type)
+                if projector is None:
+                    raise ValueError(f"No projector registered for features of node type '{node_type}'")
+                feats = node_features[node_type]
+                x = projector(feats)
+            elif node_type in self.node_embeddings:
                 embedding = self.node_embeddings[node_type]
                 if hasattr(data[node_type], "n_id"):
                     node_idx = data[node_type].n_id
@@ -211,8 +245,12 @@ class HGTBackbone(nn.Module):
             x_dict[node_type] = x
         return x_dict
 
-    def forward(self, data: HeteroData) -> Dict[str, torch.Tensor]:
-        x_dict = self._initial_x(data)
+    def forward(
+        self,
+        data: HeteroData,
+        node_features: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Dict[str, torch.Tensor]:
+        x_dict = self._initial_x(data, node_features=node_features)
         for layer in self.layers:
             x_dict = layer(x_dict, data.edge_index_dict)
             for ntype in x_dict:
