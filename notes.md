@@ -61,3 +61,6 @@ HeteroData(
   - Human (0): 860,057
   - Bot (1):   139,943
   - Imbalance Ratio: 1 Bot : 6.1 Humans
+
+
+  11/20/25 - AUPRC: 0.5436

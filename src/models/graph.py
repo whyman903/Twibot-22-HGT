@@ -1,4 +1,4 @@
-"""Graph backbone built on top of a relational graph transformer."""
+"""Graph backbone built on relational graph transformer architecture."""
 from __future__ import annotations
 
 from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
@@ -34,17 +34,22 @@ class RelationalGraphLayer(nn.Module):
                 concat=False,
             )
 
-        self.convs = HeteroConv(convs, aggr="sum")
+        self.convs = HeteroConv(convs, aggr="mean")
         self.norms = nn.ModuleDict({ntype: LayerNorm(hidden_dim) for ntype in node_types})
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x_dict, edge_index_dict):
-        out_dict = self.convs(x_dict, edge_index_dict)
-        for node_type, out in out_dict.items():
-            residual = x_dict[node_type]
-            out = self.norms[node_type](out)
-            out_dict[node_type] = self.dropout(out + residual)
-        return out_dict
+        x_dict_norm = {k: self.norms[k](v) for k, v in x_dict.items()}
+        out_dict = self.convs(x_dict_norm, edge_index_dict)
+
+        new_x_dict = {}
+        for k, x in x_dict.items():
+            if k in out_dict:
+                out = self.dropout(out_dict[k])
+                new_x_dict[k] = x + out
+            else:
+                new_x_dict[k] = x
+        return new_x_dict
 
 
 class RelationalGraphBackbone(nn.Module):
@@ -65,7 +70,6 @@ class RelationalGraphBackbone(nn.Module):
         super().__init__()
         node_types, _ = metadata
         self.hidden_dim = hidden_dim
-        # Only allocate full embeddings for selected node types (default: 'user').
         self.node_embeddings = nn.ModuleDict()
         self.type_vectors = nn.ParameterDict()
         embed_set = set(embed_node_types)
@@ -76,7 +80,6 @@ class RelationalGraphBackbone(nn.Module):
             if ntype in embed_set:
                 self.node_embeddings[ntype] = nn.Embedding(num_nodes_dict[ntype], hidden_dim)
             elif use_type_vectors_for_others:
-                # A single learnable vector shared by all nodes of this type.
                 self.type_vectors[ntype] = nn.Parameter(torch.empty(hidden_dim))
                 nn.init.xavier_uniform_(self.type_vectors[ntype].unsqueeze(0))
         self.layers = nn.ModuleList(
@@ -103,7 +106,6 @@ class RelationalGraphBackbone(nn.Module):
         node_features: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, torch.Tensor]:
         x_dict: Dict[str, torch.Tensor] = {}
-        # Produce per-node inputs for all node types, using either a lookup or a shared type vector
         for node_type in data.node_types:
             if node_features is not None and node_type in node_features:
                 projector = self.feature_projectors.get(node_type)
@@ -123,17 +125,14 @@ class RelationalGraphBackbone(nn.Module):
                     )
                 x = embedding(node_idx.to(embedding.weight.device))
             else:
-                # Use a shared type vector expanded to the node count in the mini-batch
                 if hasattr(data[node_type], "n_id"):
                     node_count = data[node_type].n_id.numel()
                 else:
                     node_count = data[node_type].num_nodes
-                # Place the type vector on the same device as available embeddings or edge indices
                 device = next(self.parameters()).device
                 if node_type in self.type_vectors:
                     tv = self.type_vectors[node_type].to(device)
                 else:
-                    # Fallback: non-embedded type without a vector; create a zeros tensor
                     tv = torch.zeros(self.hidden_dim, device=device)
                 x = tv.unsqueeze(0).expand(node_count, -1)
             x_dict[node_type] = x
@@ -145,13 +144,7 @@ class RelationalGraphBackbone(nn.Module):
 
 
 class HGTBackbone(nn.Module):
-    """Heterogeneous Graph Transformer backbone (optional alternative to RGT).
-
-    Uses HGTConv layers over hetero graphs. Input node representations mirror
-    RelationalGraphBackbone: a learned embedding table for selected node types
-    (default: 'user'), and a single learnable type vector for other node types
-    to keep memory usage manageable.
-    """
+    """Heterogeneous Graph Transformer backbone using HGTConv layers."""
 
     def __init__(
         self,
@@ -193,6 +186,7 @@ class HGTBackbone(nn.Module):
                 for _ in range(num_layers)
             ]
         )
+        self.norms = nn.ModuleDict({ntype: nn.LayerNorm(hidden_dim) for ntype in node_types})
         self.dropout = nn.Dropout(dropout)
         self.feature_projectors = nn.ModuleDict(
             {ntype: nn.Linear(dim, hidden_dim) for ntype, dim in feature_dims.items()}
@@ -252,7 +246,11 @@ class HGTBackbone(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         x_dict = self._initial_x(data, node_features=node_features)
         for layer in self.layers:
-            x_dict = layer(x_dict, data.edge_index_dict)
-            for ntype in x_dict:
-                x_dict[ntype] = self.dropout(x_dict[ntype])
+            x_dict_norm = {k: self.norms[k](v) for k, v in x_dict.items()}
+            x_dict_out = layer(x_dict_norm, data.edge_index_dict)
+
+            for k in x_dict.keys():
+                if k in x_dict_out:
+                    out = self.dropout(x_dict_out[k])
+                    x_dict[k] = x_dict[k] + out
         return x_dict

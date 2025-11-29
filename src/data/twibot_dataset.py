@@ -9,7 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
 import ijson
 import numpy as np
@@ -18,7 +18,6 @@ from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import HeteroData
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
-# Mapping between raw relation names and (source_node_type, relation_name, target_node_type)
 RELATION_SCHEMA: Mapping[str, Tuple[str, str, str]] = {
     "followers": ("user", "followers", "user"),
     "following": ("user", "following", "user"),
@@ -71,7 +70,6 @@ class PreprocessedDataPaths:
 
 def _iter_json_array(path: Path) -> Iterable[Mapping[str, object]]:
     """Stream items from a JSON array without loading it entirely."""
-
     with path.open("rb") as handle:
         for obj in ijson.items(handle, "item"):
             yield obj
@@ -86,11 +84,7 @@ def _safe_log1p(value: float) -> float:
 
 
 def _account_age_days(created_at: Optional[str], reference: datetime = DEFAULT_REFERENCE_DATETIME) -> float:
-    """Return the non-negative day difference between reference and created_at.
-
-    Ensures both datetimes are timezone-aware (UTC). If either input is
-    offset-naive, assume UTC.
-    """
+    """Return the non-negative day difference between reference and created_at."""
     if not created_at:
         return 0.0
     try:
@@ -98,7 +92,6 @@ def _account_age_days(created_at: Optional[str], reference: datetime = DEFAULT_R
     except ValueError:
         return 0.0
 
-    # Normalize both to timezone-aware UTC for safe subtraction.
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     else:
@@ -111,6 +104,7 @@ def _account_age_days(created_at: Optional[str], reference: datetime = DEFAULT_R
 
     delta = ref - dt
     return max(delta.total_seconds() / 86400.0, 0.0)
+
 
 class TwiBot22GraphBuilder:
     """Preprocesses the raw TwiBot-22 dump into tensors consumable by PyG."""
@@ -149,21 +143,16 @@ class TwiBot22GraphBuilder:
         self._labels: Dict[int, int] = {}
         self._split: Dict[int, str] = {}
 
-        # Tweet-level metadata to enable reply similarity/latency features
         self._tweet_text: Dict[int, str] = {}
         self._tweet_author_idx: Dict[int, int] = {}
         self._tweet_created_ts: Dict[int, float] = {}
-        self._pending_replies: List[Tuple[int, int, int]] = []  # (user_idx, reply_tweet_idx, orig_tweet_idx)
+        self._pending_replies: List[Tuple[int, int, int]] = []
         self._user_reply_sims: Dict[int, List[float]] = defaultdict(list)
         self._user_reply_lat_min: Dict[int, List[float]] = defaultdict(list)
-        self._tweets_for_text_features: set[int] = set()
+        self._tweets_for_text_features: Set[int] = set()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
     def build(self) -> None:
         """Runs the end-to-end preprocessing pipeline."""
-
         self._index_users()
         self._index_auxiliary_nodes()
         self._load_labels_and_splits()
@@ -188,13 +177,10 @@ class TwiBot22GraphBuilder:
             tweet_text_embeddings_pt=self.processed_root / "tweet_text_embeddings.pt",
         )
 
-    # ------------------------------------------------------------------
-    # Processing helpers
-    # ------------------------------------------------------------------
     def _index_users(self) -> None:
         user_path = self.raw_root / RAW_USER_FILENAME
         for idx, record in enumerate(_iter_json_array(user_path)):
-            user_id: str = record["id"]  # type: ignore[index]
+            user_id: str = record["id"]
             self._user_id_to_index[user_id] = idx
             self._user_metadata[idx] = {
                 "username": record.get("username"),
@@ -249,17 +235,17 @@ class TwiBot22GraphBuilder:
     def _index_auxiliary_nodes(self) -> None:
         hashtag_path = self.raw_root / RAW_HASHTAG_FILENAME
         for idx, record in enumerate(_iter_json_array(hashtag_path)):
-            self._hashtag_id_to_index[record["id"]] = idx  # type: ignore[index]
+            self._hashtag_id_to_index[record["id"]] = idx
 
         list_path = self.raw_root / RAW_LIST_FILENAME
         for idx, record in enumerate(_iter_json_array(list_path)):
-            self._list_id_to_index[record["id"]] = idx  # type: ignore[index]
+            self._list_id_to_index[record["id"]] = idx
 
         tweet_files = sorted(self.raw_root.glob("tweet_*.json"))
         running_idx = 0
         for path in tweet_files:
             for record in _iter_json_array(path):
-                self._tweet_id_to_index[record["id"]] = running_idx  # type: ignore[index]
+                self._tweet_id_to_index[record["id"]] = running_idx
                 running_idx += 1
 
     def _load_labels_and_splits(self) -> None:
@@ -295,7 +281,6 @@ class TwiBot22GraphBuilder:
                     continue
                 user_idx = self._user_id_to_index[author_id]
                 created_at = record.get("created_at")
-                # Use POSIX timestamp to sort tweets by recency (newest first)
                 timestamp = 0.0
                 if created_at:
                     try:
@@ -309,32 +294,15 @@ class TwiBot22GraphBuilder:
                         timestamp = 0.0
                 text = str(record.get("text") or "")
 
-                # Persist tweet-level metadata for aggregates
                 t_id = record.get("id")
-                try:
-                    if t_id is not None and t_id in self._tweet_id_to_index:
-                        t_idx = self._tweet_id_to_index[t_id]
-                        self._tweet_author_idx[t_idx] = user_idx
-                        self._tweet_created_ts[t_idx] = timestamp
-                        self._tweet_text[t_idx] = text
-                except Exception:
-                    pass
+                if t_id is not None and t_id in self._tweet_id_to_index:
+                    t_idx = self._tweet_id_to_index[t_id]
+                    self._tweet_author_idx[t_idx] = user_idx
+                    self._tweet_created_ts[t_idx] = timestamp
+                    self._tweet_text[t_idx] = text
 
-                heap = self._user_text_fragments[user_idx]
-                entry = (timestamp, text)
-                # If max_tweets_per_user <= 0, keep all tweets for the user.
-                if self.max_tweets_per_user is None or self.max_tweets_per_user <= 0:
-                    heap.append(entry)
-                else:
-                    if len(heap) < self.max_tweets_per_user:
-                        heap.append(entry)
-                        heap.sort(key=lambda x: x[0], reverse=True)
-                    else:
-                        if entry[0] > heap[-1][0]:
-                            heap[-1] = entry
-                            heap.sort(key=lambda x: x[0], reverse=True)
+                self._user_text_fragments[user_idx].append((timestamp, text))
 
-                # Track reply relations for later aggregation
                 referenced = record.get("referenced_tweets") or []
                 for ref in referenced:
                     try:
@@ -354,7 +322,6 @@ class TwiBot22GraphBuilder:
                             self._pending_replies.append((user_idx, reply_idx, orig_idx))
                             self._tweets_for_text_features.add(reply_idx)
                             self._tweets_for_text_features.add(orig_idx)
-                            break
                         if (
                             ref_type in {"retweeted", "quoted"}
                             and orig_id is not None
@@ -366,7 +333,6 @@ class TwiBot22GraphBuilder:
                     except Exception:
                         continue
 
-    # --- Reply aggregates -------------------------------------------------
     @staticmethod
     def _jaccard_similarity(a: str, b: str) -> float:
         a_tokens = set(a.lower().split())
@@ -378,7 +344,6 @@ class TwiBot22GraphBuilder:
         return float(inter / union) if union > 0 else 0.0
 
     def _compute_reply_aggregates(self) -> None:
-        # Accumulate per-user similarity and latency (in minutes)
         for user_idx, reply_idx, orig_idx in self._pending_replies:
             r_text = self._tweet_text.get(reply_idx, "")
             o_text = self._tweet_text.get(orig_idx, "")
@@ -444,7 +409,11 @@ class TwiBot22GraphBuilder:
             bio = self._user_bio.get(user_idx, "").strip()
             if bio:
                 pieces.append(bio)
-            tweets = [t for _, t in sorted(self._user_text_fragments.get(user_idx, []), key=lambda x: x[0], reverse=True)]
+            tweet_entries = self._user_text_fragments.get(user_idx, [])
+            tweet_entries_sorted = sorted(tweet_entries, key=lambda x: x[0], reverse=True)
+            if self.max_tweets_per_user is not None and self.max_tweets_per_user > 0:
+                tweet_entries_sorted = tweet_entries_sorted[:self.max_tweets_per_user]
+            tweets = [t for _, t in tweet_entries_sorted]
             if tweets:
                 pieces.extend(tweets)
             combined = self.text_concat_separator.join(pieces)
@@ -455,7 +424,6 @@ class TwiBot22GraphBuilder:
         numeric = np.array(self._user_numeric_features, dtype=np.float32)
         binary = np.array(self._user_binary_features, dtype=np.float32)
 
-        # Append per-user reply similarity/latency aggregates
         num_users = numeric.shape[0]
         extras: List[List[float]] = []
         for u in range(num_users):
@@ -512,8 +480,11 @@ class TwiBot22GraphBuilder:
         with (self.raw_root / RAW_EDGE_FILENAME).open("r", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
-                edge_counts[row["relation"]] += 1
-        # Pre-allocate arrays per relation for memory efficiency.
+                relation = row["relation"]
+                if relation not in RELATION_SCHEMA:
+                    continue
+                edge_counts[relation] += 1
+
         edge_arrays: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
         for relation, count in edge_counts.items():
             edge_arrays[relation] = (
@@ -541,10 +512,23 @@ class TwiBot22GraphBuilder:
 
         for relation, (src_type, rel_name, dst_type) in RELATION_SCHEMA.items():
             src_array, dst_array = edge_arrays[relation]
-            edge_index = torch.from_numpy(
-                np.stack([src_array, dst_array], axis=0)
-            ).to(torch.long)
+            filled = edge_offsets[relation]
+            edges_np = np.stack([src_array[:filled], dst_array[:filled]], axis=1)
+            if edges_np.size > 0:
+                edges_np = np.unique(edges_np, axis=0)
+            if edges_np.size == 0:
+                edge_index = torch.empty((2, 0), dtype=torch.long)
+            else:
+                edge_index = torch.from_numpy(edges_np.T).to(torch.long)
             data[(src_type, rel_name, dst_type)].edge_index = edge_index
+
+            reverse_rel = f"{rel_name}_rev"
+            if edges_np.size == 0:
+                rev_index = torch.empty((2, 0), dtype=torch.long)
+            else:
+                rev_edges_np = edges_np[:, ::-1].copy()
+                rev_index = torch.from_numpy(rev_edges_np.T).to(torch.long)
+            data[(dst_type, reverse_rel, src_type)].edge_index = rev_index
 
         return data
 
@@ -575,7 +559,6 @@ class TwiBot22GraphBuilder:
         torch.save(labels, paths.labels_pt)
 
         split_tensor = torch.full((len(user_ids),), fill_value=-1, dtype=torch.long)
-        # Support both 'val' and 'valid' naming conventions
         split_lookup = {"train": 0, "valid": 1, "val": 1, "test": 2}
         for idx, split_name in self._split.items():
             if split_name in split_lookup:
@@ -599,9 +582,6 @@ class TwiBot22GraphBuilder:
             }
             torch.save(artifact, paths.tweet_text_embeddings_pt)
 
-    # ------------------------------------------------------------------
-    # Utility helpers
-    # ------------------------------------------------------------------
     def _get_id_map_for_type(self, node_type: str) -> Mapping[str, int]:
         if node_type == "user":
             return self._user_id_to_index
@@ -631,9 +611,10 @@ class UserTextStore:
         self._device = device
         self._encoded = dict(encoded_tensors) if encoded_tensors is not None else None
 
-    def fetch(self, indices: Sequence[int]) -> Mapping[str, torch.Tensor]:
+    def fetch(self, indices: Sequence[int] | torch.Tensor) -> Mapping[str, torch.Tensor]:
         if self._encoded is not None:
-            idx = torch.as_tensor(indices, dtype=torch.long)
+            first_tensor = next(iter(self._encoded.values()))
+            idx = torch.as_tensor(indices, dtype=torch.long, device=first_tensor.device)
             out: Dict[str, torch.Tensor] = {}
             for k, v in self._encoded.items():
                 sel = v.index_select(0, idx)
@@ -659,9 +640,10 @@ class ProfileFeatureStore:
         self._tensor = features
         self._device = device
 
-    def fetch(self, indices: Sequence[int]) -> torch.Tensor:
-        feat = self._tensor[indices]
-        if self._device is not None:
+    def fetch(self, indices: Sequence[int] | torch.Tensor) -> torch.Tensor:
+        idx = torch.as_tensor(indices, dtype=torch.long, device=self._tensor.device)
+        feat = self._tensor[idx]
+        if self._device is not None and feat.device != self._device:
             feat = feat.to(self._device)
         return feat
 
@@ -690,13 +672,14 @@ class TweetFeatureStore:
         idx_tensor = torch.as_tensor(indices, dtype=torch.long)
         if idx_tensor.numel() == 0:
             return torch.empty((0, self.feature_dim), dtype=torch.float32, device=self._device)
-        search_indices = idx_tensor.to(self._indices.device)
+        storage_device = self._indices.device
+        search_indices = idx_tensor.to(storage_device)
         pos = torch.searchsorted(self._indices, search_indices)
         matched = (pos < self._indices.numel()) & (self._indices[pos] == search_indices)
-        out = torch.zeros((idx_tensor.numel(), self.feature_dim), dtype=torch.float32)
+        out = torch.zeros((idx_tensor.numel(), self.feature_dim), dtype=torch.float32, device=storage_device)
         if matched.any():
             out[matched] = self._embeddings[pos[matched]].to(torch.float32)
-        if self._device is not None:
+        if self._device is not None and out.device != self._device:
             out = out.to(self._device)
         return out
 
@@ -746,9 +729,7 @@ class TwiBot22DataModule:
 
     def setup(self) -> None:
         paths = self.builder.get_processed_paths()
-        # Explicitly disable weights-only loading for application-owned artifacts
-        # for compatibility with PyTorch 2.6+ where weights_only defaults to True.
-        # Fall back to the old signature on older PyTorch versions.
+
         def _torch_load_compat(p: Path):
             try:
                 return torch.load(p, weights_only=False)
@@ -767,7 +748,6 @@ class TwiBot22DataModule:
                 except Exception:
                     encoded = None
             if encoded is None:
-                # Tokenize all texts once and cache to disk.
                 batch_size = 256
                 all_input_ids: List[torch.Tensor] = []
                 all_attention: List[torch.Tensor] = []
@@ -824,12 +804,10 @@ class TwiBot22DataModule:
                 elif idx < len(texts):
                     texts[idx] = text
                 else:
-                    # Fill missing entries if needed.
                     texts.extend([""] * (idx - len(texts)))
                     texts.append(text)
         return texts
 
-    # Convenience accessors -------------------------------------------------
     def get_split_indices(self, split: str) -> torch.Tensor:
         if self.splits is None:
             raise RuntimeError("Call setup() first")

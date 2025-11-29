@@ -5,7 +5,13 @@ from typing import Dict
 
 import numpy as np
 import torch
-from sklearn.metrics import average_precision_score, classification_report, f1_score
+from sklearn.metrics import (
+    average_precision_score,
+    balanced_accuracy_score,
+    classification_report,
+    f1_score,
+    matthews_corrcoef,
+)
 
 
 def compute_auprc(labels: torch.Tensor, probs: torch.Tensor) -> float:
@@ -43,4 +49,12 @@ def compute_metrics(labels: torch.Tensor, preds: torch.Tensor, probs: torch.Tens
     metrics["precision_macro"] = float(report["macro avg"]["precision"])
     metrics["recall_macro"] = float(report["macro avg"]["recall"])
     metrics["accuracy"] = float(report["accuracy"])
+    try:
+        metrics["balanced_accuracy"] = float(balanced_accuracy_score(labels_np, preds_np))
+    except ValueError:
+        metrics["balanced_accuracy"] = float("nan")
+    try:
+        metrics["mcc"] = float(matthews_corrcoef(labels_np, preds_np))
+    except ValueError:
+        metrics["mcc"] = float("nan")
     return metrics

@@ -9,7 +9,7 @@ from transformers import AutoTokenizer
 
 from src.data import TwiBot22DataModule
 from src.models import ProfileFeatureEncoder, RelationalGraphBackbone, RobertaTextEncoder, TwiBotModel, HGTBackbone
-from src.training import TrainingConfig, Trainer
+from src.training import TrainingConfig, Trainer, set_seed
 from src.utils.losses import FocalLoss, WeightedCrossEntropy
 from src.utils.optim import build_optimizers
 
@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-layers", type=int, default=3)
     parser.add_argument("--hidden-dim", type=int, default=384)
     parser.add_argument("--graph-heads", type=int, default=4)
-    parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument("--dropout", type=float, default=0.4)
     parser.add_argument("--max-tweets", type=int, default=-1, help="Max tweets per user (-1 for all)")
     parser.add_argument("--text-max-length", type=int, default=256, help="Max tokens for text encoder input")
     parser.add_argument(
@@ -33,14 +33,17 @@ def parse_args() -> argparse.Namespace:
         type=int,
         nargs=2,
         metavar=("L1", "L2"),
-        default=[10, 10],
+        default=[15, 10],
         help="Neighbor sample sizes per GNN layer",
     )
     parser.add_argument("--loss", choices=["focal", "weighted_ce"], default="focal")
     parser.add_argument("--gamma", type=float, default=1.5)
-    parser.add_argument("--lr-backbone", type=float, default=3e-4)
-    parser.add_argument("--lr-text", type=float, default=5e-5)
-    parser.add_argument("--weight-decay", type=float, default=1e-2)
+    parser.add_argument("--bot-weight-mult", type=float, default=1.0, help="Multiply bot class weight to push precision up")
+    parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing factor (0.0-0.2 recommended)")
+    parser.add_argument("--target-pos-ratio", type=float, default=None, help="Target bot ratio for oversampling train indices (0-1)")
+    parser.add_argument("--lr-backbone", type=float, default=1e-4)
+    parser.add_argument("--lr-text", type=float, default=2e-5)
+    parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--max-grad-norm", type=float, default=1.0, help="Gradient clipping threshold (prevents NaN)")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--log-dir", type=Path, default=None)
@@ -56,17 +59,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
     parser.add_argument("--mixed-precision", dest="mixed_precision", action="store_true")
     parser.add_argument("--no-mixed-precision", dest="mixed_precision", action="store_false")
-    # Disable mixed precision by default for numerical stability on large graphs.
-    parser.set_defaults(mixed_precision=False)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--deterministic", dest="deterministic", action="store_true", help="Enable deterministic behavior (disables CuDNN benchmark)")
+    parser.add_argument("--no-deterministic", dest="deterministic", action="store_false", help="Allow non-deterministic CuDNN ops")
+    parser.set_defaults(mixed_precision=False, deterministic=True)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
+    set_seed(args.seed, deterministic=args.deterministic)
+
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    
-    # Default log directory if not specified
+
     log_dir = args.log_dir if args.log_dir else Path("runs/latest")
     if log_dir:
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -105,6 +111,11 @@ def main() -> None:
         tweet_text_batch_size=args.tweet_text_batch_size,
         text_max_length=args.text_max_length,
         resume=args.resume,
+        seed=args.seed,
+        deterministic=args.deterministic,
+        target_pos_ratio=args.target_pos_ratio,
+        bot_weight_mult=args.bot_weight_mult,
+        label_smoothing=args.label_smoothing,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.text_model_name)
@@ -184,11 +195,12 @@ def main() -> None:
     class_counts = torch.bincount(train_labels, minlength=2).float()
     class_counts = torch.where(class_counts > 0, class_counts, torch.ones_like(class_counts))
     class_weights = (class_counts.sum() / class_counts).to(device)
+    class_weights[1] = class_weights[1] * cfg.bot_weight_mult
 
     if cfg.loss_type == "focal":
-        loss_fn = FocalLoss(gamma=cfg.gamma, alpha=class_weights)
+        loss_fn = FocalLoss(gamma=cfg.gamma, alpha=class_weights, label_smoothing=cfg.label_smoothing)
     else:
-        loss_fn = WeightedCrossEntropy(weight=class_weights)
+        loss_fn = WeightedCrossEntropy(weight=class_weights, label_smoothing=cfg.label_smoothing)
 
     optimizers = build_optimizers(
         model,

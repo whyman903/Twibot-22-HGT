@@ -12,68 +12,64 @@
 
 set -euo pipefail
 
-# Activate the virtual environment
-source /sciclone/home/hwhyman/Graph_learning/.venv/bin/activate
+# Suppress HuggingFace tokenizers parallelism warning
+export TOKENIZERS_PARALLELISM=false
 
-PYTHON_BIN=${PYTHON_BIN:-python}
-
-if [[ -n "${ENV_ACTIVATE:-}" ]]; then
-    # shellcheck disable=SC1090
-    source "${ENV_ACTIVATE}"
-fi
-
-if command -v module >/dev/null 2>&1; then
-    module purge >/dev/null 2>&1 || true
-fi
-
+# Setup
 cd /sciclone/home/hwhyman/Graph_learning
-
+source .venv/bin/activate
 mkdir -p logs
 
-RAW_DATA=${RAW_DATA:-TwiBot-22}
-PROCESSED_DIR=${PROCESSED_DIR:-processed}
-DEVICE=${DEVICE:-cuda}
+# ============ CONFIGURATION ============
+# These parameters will be auto-detected from checkpoint if available
+# Only override if you need different evaluation settings
+
 EVAL_SPLIT=${EVAL_SPLIT:-test}
+BATCH_SIZE=${BATCH_SIZE:-256}
+NUM_NEIGHBORS=${NUM_NEIGHBORS:-"15 10"}
+CHECKPOINT=${CHECKPOINT:-""}  # Empty = use processed/best_model.pt
+PROCESSED_DIR=${PROCESSED_DIR:-processed}
+RAW_DATA=${RAW_DATA:-TwiBot-22}
 
-# HGT and defaults
-USE_HGT=${USE_HGT:-1}
-HGT_BATCH_SIZE=${HGT_BATCH_SIZE:-256}
-HGT_NUM_NEIGHBORS=${HGT_NUM_NEIGHBORS:-"20 20"}
+# Tweet text features (should match training)
+ENABLE_TWEET_TEXT=${ENABLE_TWEET_TEXT:-true}
+TWEET_TEXT_MODEL=${TWEET_TEXT_MODEL:-"xlm-roberta-base"}
+TWEET_TEXT_MAX_LEN=${TWEET_TEXT_MAX_LEN:-128}
+TWEET_TEXT_BATCH=${TWEET_TEXT_BATCH:-512}
+# ===========================================
 
-missing_modules=()
-for module in torch transformers torch_geometric; do
-    if ! "${PYTHON_BIN}" -c "import ${module}" >/dev/null 2>&1; then
-        missing_modules+=("${module}")
-    fi
-done
+echo "=============================================="
+echo "TwiBot-22 Evaluation"
+echo "=============================================="
+echo "Split: $EVAL_SPLIT"
+echo "Batch size: $BATCH_SIZE"
+echo "Checkpoint: ${CHECKPOINT:-'(auto: processed/best_model.pt)'}"
+echo ""
+echo "Note: Model architecture will be auto-detected from checkpoint"
+echo "=============================================="
 
-if (( ${#missing_modules[@]} > 0 )); then
-    echo "[ERROR] Missing Python packages: ${missing_modules[*]}" >&2
-    echo "Install dependencies (e.g. pip install -r requirements.txt) before running." >&2
-    exit 1
+# Build optional args
+CHECKPOINT_ARG=""
+if [ -n "$CHECKPOINT" ]; then
+    CHECKPOINT_ARG="--checkpoint $CHECKPOINT"
 fi
 
-read -r -a EVAL_ARGS <<< "${EVAL_ARGS:-}"
-
-# Append HGT flags unless explicitly overridden
-if [[ "${USE_HGT}" == "1" ]]; then
-  if [[ ! " ${EVAL_ARGS[*]} " =~ " --use-hgt " ]]; then
-    EVAL_ARGS+=("--use-hgt")
-  fi
-  if [[ ! " ${EVAL_ARGS[*]} " =~ " --batch-size " ]]; then
-    EVAL_ARGS+=("--batch-size" "${HGT_BATCH_SIZE}")
-  fi
-  if [[ ! " ${EVAL_ARGS[*]} " =~ " --num-neighbors " ]]; then
-    # shellcheck disable=SC2206
-    EVAL_ARGS+=(--num-neighbors ${HGT_NUM_NEIGHBORS})
-  fi
+TWEET_TEXT_ARGS=""
+if [ "$ENABLE_TWEET_TEXT" = true ]; then
+    TWEET_TEXT_ARGS="--enable-tweet-text --tweet-text-model $TWEET_TEXT_MODEL --tweet-text-max-length $TWEET_TEXT_MAX_LEN --tweet-text-batch-size $TWEET_TEXT_BATCH"
 fi
 
-"${PYTHON_BIN}" eval.py --raw-data "${RAW_DATA}" --processed-dir "${PROCESSED_DIR}" --device "${DEVICE}" --split "${EVAL_SPLIT}" "${EVAL_ARGS[@]}"
+# Run evaluation with auto-config enabled (default)
+python eval.py \
+    --raw-data "$RAW_DATA" \
+    --processed-dir "$PROCESSED_DIR" \
+    --device cuda \
+    --batch-size "$BATCH_SIZE" \
+    --num-neighbors $NUM_NEIGHBORS \
+    --split "$EVAL_SPLIT" \
+    --use-hgt \
+    $CHECKPOINT_ARG \
+    $TWEET_TEXT_ARGS
 
-
-
-
-
-
-
+echo ""
+echo "==> Evaluation complete!"

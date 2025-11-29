@@ -9,7 +9,7 @@ from transformers import AutoModel, AutoConfig
 
 
 class RobertaTextEncoder(nn.Module):
-    """Encodes user bios and recent tweets with a frozen RoBERTa backbone."""
+    """Encodes user bios and recent tweets with a frozen or trainable RoBERTa backbone."""
 
     def __init__(
         self,
@@ -21,6 +21,7 @@ class RobertaTextEncoder(nn.Module):
         lora_alpha: int = 16,
         lora_dropout: float = 0.05,
         target_modules: Optional[list[str]] = None,
+        gradient_checkpointing: bool = True,
     ) -> None:
         super().__init__()
         cfg = AutoConfig.from_pretrained(model_name)
@@ -28,8 +29,9 @@ class RobertaTextEncoder(nn.Module):
             cfg.add_pooling_layer = False
         self.model = AutoModel.from_pretrained(model_name, config=cfg)
 
-        # Optionally freeze the backbone weights; LoRA adapters (if enabled)
-        # will be trainable on top of the frozen base.
+        if gradient_checkpointing and trainable:
+            self.model.gradient_checkpointing_enable()
+
         if not trainable:
             for param in self.model.parameters():
                 param.requires_grad = False
@@ -40,7 +42,7 @@ class RobertaTextEncoder(nn.Module):
         if use_lora:
             try:
                 from peft import LoraConfig, TaskType, get_peft_model
-            except ImportError as exc:  
+            except ImportError as exc:
                 raise RuntimeError(
                     "LoRA adapters requested but the 'peft' package is not installed."
                 ) from exc
@@ -56,10 +58,8 @@ class RobertaTextEncoder(nn.Module):
             )
             self.model = get_peft_model(self.model, lora_cfg)
 
-        # Consider the encoder fully frozen only if no parameters require grad.
         self._frozen = not any(p.requires_grad for p in self.model.parameters())
         if self._frozen:
-            # Ensure deterministic behavior (disable dropout etc.) when frozen
             self.model.eval()
 
     def forward(self, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
