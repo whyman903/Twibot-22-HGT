@@ -115,6 +115,7 @@ class Trainer:
         self.start_epoch = 1
         self.best_metric = -math.inf
         self.best_epoch = -1
+        self.global_step = 0  # For per-batch TensorBoard logging
 
         self.schedulers: Dict[str, torch.optim.lr_scheduler._LRScheduler] = {}
         if config.use_scheduler and optimizers:
@@ -311,6 +312,21 @@ class Trainer:
             total_loss += loss.item() * labels.size(0)
             total_examples += labels.size(0)
             finite_batches += 1
+            self.global_step += 1
+
+            # Per-batch TensorBoard logging (every 100 batches)
+            if self.writer is not None and batch_idx % 100 == 0:
+                self.writer.add_scalar("train/batch_loss", loss.item(), self.global_step)
+                # Running metrics
+                if running_total > 0:
+                    running_acc = running_correct / running_total
+                    self.writer.add_scalar("train/batch_accuracy", running_acc, self.global_step)
+                    if running_tp + running_fp > 0:
+                        running_prec = running_tp / (running_tp + running_fp)
+                        self.writer.add_scalar("train/batch_precision", running_prec, self.global_step)
+                    if running_tp + running_fn > 0:
+                        running_rec = running_tp / (running_tp + running_fn)
+                        self.writer.add_scalar("train/batch_recall", running_rec, self.global_step)
 
         if finite_batches == 0:
             return {"loss": float("nan")}
@@ -433,6 +449,7 @@ class Trainer:
             },
             "best_metric": self.best_metric,
             "best_epoch": self.best_epoch,
+            "global_step": self.global_step,
             "history": self.history,
             "config": {
                 "text_trainable": self.cfg.text_trainable,
@@ -485,6 +502,7 @@ class Trainer:
         self.start_epoch = checkpoint["epoch"] + 1
         self.best_metric = checkpoint.get("best_metric", -math.inf)
         self.best_epoch = checkpoint.get("best_epoch", -1)
+        self.global_step = checkpoint.get("global_step", 0)
         self.history = checkpoint.get("history", [])
 
         print(f"Resumed from epoch {checkpoint['epoch']} (Next epoch: {self.start_epoch})")
