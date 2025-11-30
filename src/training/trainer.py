@@ -323,11 +323,10 @@ class Trainer:
             total_examples += labels.size(0)
             finite_batches += 1
             self.global_step += 1
-
-            # Per-batch TensorBoard logging (every 100 batches)
+            
             if self.writer is not None and batch_idx % 100 == 0:
                 self.writer.add_scalar("train/batch_loss", loss.item(), self.global_step)
-                # Running metrics
+                
                 if running_total > 0:
                     running_acc = running_correct / running_total
                     self.writer.add_scalar("train/batch_accuracy", running_acc, self.global_step)

@@ -12,7 +12,6 @@
 
 set -euo pipefail
 
-# Suppress HuggingFace tokenizers parallelism warning
 export TOKENIZERS_PARALLELISM=false
 
 # Setup
@@ -21,53 +20,44 @@ source .venv/bin/activate
 mkdir -p logs
 
 # ============ CONFIGURATION ============
-# Model Architecture
+
 HIDDEN_DIM=256
 NUM_LAYERS=3
 GRAPH_HEADS=4
-DROPOUT=0.4                # Increased from 0.3 to reduce overfitting
+DROPOUT=0.4              
 
-# Training Hyperparameters
-BATCH_SIZE=128              # Reduced for GPU memory (LoRA + trainable text encoder needs more VRAM)
+BATCH_SIZE=128             
 EPOCHS=15
 PATIENCE=5
-LR_BACKBONE=1e-4           # Reduced from 1.5e-4 for stability
-LR_TEXT=2e-5               # Lower LR for text encoder
-WEIGHT_DECAY=0.05          # Increased from 0.01 to reduce overfitting
+LR_BACKBONE=1e-4         
+LR_TEXT=2e-5              
+WEIGHT_DECAY=0.05        
 MAX_GRAD_NORM=1.0
 
-# Class Imbalance - use weight multiplier only (not both oversampling AND weighting)
-BOT_WEIGHT_MULT=2.0        # Moderate class weight (3.0 was too aggressive, causing overconfidence)
-TARGET_POS_RATIO=""        # Disabled - using class weights instead
-LABEL_SMOOTHING=0.1        # Helps with overfitting and calibration
+BOT_WEIGHT_MULT=2.0       
+TARGET_POS_RATIO=""        
+LABEL_SMOOTHING=0.1        
 
-# Graph Sampling
-NUM_NEIGHBORS="20 10"    # Reduced from "25 15" for faster training
+NUM_NEIGHBORS="20 10"    
 
-# Text Encoder
 TEXT_MODEL="xlm-roberta-base"
-TEXT_MAX_LEN=256           # Reduced from 384 to save GPU memory
-TEXT_TRAINABLE=""        # Set to "true" (or any value) to enable, empty to disable
+TEXT_MAX_LEN=256         
+TEXT_TRAINABLE=""
 USE_LORA=true
 
-
-# Tweet Features
 MAX_TWEETS=50
-TWEET_TEXT_MODEL=""        # Leave empty to reuse TEXT_MODEL
+TWEET_TEXT_MODEL=""
 TWEET_TEXT_MAX_LEN=128
 TWEET_TEXT_BATCH=512
 ENABLE_TWEET_TEXT=true
 
-# Evaluation
 EVAL_SPLIT=test
 
-# Preprocessing
-REBUILD_FLAG="--rebuild"            # Set to "--rebuild" to force preprocessing rebuild
-# REBUILD_FLAG="--rebuild"
+REBUILD_FLAG="--rebuild"
+# REBUILD_FLAG=""
 
 RESUME_FLAG=""             
 # RESUME_FLAG="--resume"
-
 
 echo "=============================================="
 echo "TwiBot-22 Training Configuration"

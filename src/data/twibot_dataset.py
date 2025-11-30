@@ -743,7 +743,7 @@ class TwiBot22DataModule:
         if self.tokenizer is not None:
             encoded: Optional[Dict[str, torch.Tensor]] = None
             
-            # Fix: Include model name in cache filename to prevent collisions
+            # Include model name in cache filename to prevent collisions
             model_name_safe = self.tokenizer.name_or_path.replace("/", "__")
             tokens_path = paths.text_tokens_pt.parent / f"user_text_tokens_{model_name_safe}.pt"
             

@@ -20,23 +20,17 @@ cd /sciclone/home/hwhyman/Graph_learning
 source .venv/bin/activate
 mkdir -p logs
 
-# ============ CONFIGURATION ============
-# These parameters will be auto-detected from checkpoint if available
-# Only override if you need different evaluation settings
-
 EVAL_SPLIT=${EVAL_SPLIT:-test}
 BATCH_SIZE=${BATCH_SIZE:-256}
 NUM_NEIGHBORS=${NUM_NEIGHBORS:-"15 10"}
-CHECKPOINT=${CHECKPOINT:-""}  # Empty = use processed/best_model.pt
+CHECKPOINT=${CHECKPOINT:-""}
 PROCESSED_DIR=${PROCESSED_DIR:-processed}
 RAW_DATA=${RAW_DATA:-TwiBot-22}
 
-# Tweet text features (should match training)
 ENABLE_TWEET_TEXT=${ENABLE_TWEET_TEXT:-true}
 TWEET_TEXT_MODEL=${TWEET_TEXT_MODEL:-"xlm-roberta-base"}
 TWEET_TEXT_MAX_LEN=${TWEET_TEXT_MAX_LEN:-128}
 TWEET_TEXT_BATCH=${TWEET_TEXT_BATCH:-512}
-# ===========================================
 
 echo "=============================================="
 echo "TwiBot-22 Evaluation"
@@ -59,7 +53,6 @@ if [ "$ENABLE_TWEET_TEXT" = true ]; then
     TWEET_TEXT_ARGS="--enable-tweet-text --tweet-text-model $TWEET_TEXT_MODEL --tweet-text-max-length $TWEET_TEXT_MAX_LEN --tweet-text-batch-size $TWEET_TEXT_BATCH"
 fi
 
-# Run evaluation with auto-config enabled (default)
 python eval.py \
     --raw-data "$RAW_DATA" \
     --processed-dir "$PROCESSED_DIR" \

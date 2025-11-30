@@ -36,18 +36,9 @@ def build_optimizers(
     text_modules = []
     other_modules = []
 
-    # Split top-level modules to avoid traversing same params twice if possible,
-    # but since we don't know the structure perfectly, let's iterate named_children
-    # to assign them to text or other buckets.
-    
-    # Helper to classify a top-level module
     def is_text_module(name: str) -> bool:
         return any(name.startswith(tm) for tm in text_module_names)
 
-    # We need to be careful not to miss parameters. 
-    # Let's iterate all parameters and assign them to groups.
-    # But the standard way is to group by param pointers.
-    
     text_params_decay = []
     text_params_no_decay = []
     other_params_decay = []
@@ -60,13 +51,8 @@ def build_optimizers(
             continue
         seen_params.add(param)
         
-        # Determine if text or other
         is_text = any(name.startswith(tm) for tm in text_module_names)
         
-        # Determine if decay or no decay
-        # Typical rule: bias, LayerNorm.weight, LayerNorm.bias -> no decay
-        # Also embeddings sometimes? But usually we want decay on embeddings.
-        # Simplest heuristic: 'bias' in name or 'norm' in name (case insensitive).
         no_decay = "bias" in name or "norm" in name.lower()
         
         if is_text:

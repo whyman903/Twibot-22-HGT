@@ -156,7 +156,6 @@ class HGTTransformerLayer(nn.Module):
         super().__init__()
         node_types, _ = metadata
         
-        # Attention Block
         self.attn = HGTConv(
             in_channels=hidden_dim,
             out_channels=hidden_dim,
@@ -165,7 +164,6 @@ class HGTTransformerLayer(nn.Module):
         )
         self.norm1 = nn.ModuleDict({nt: nn.LayerNorm(hidden_dim) for nt in node_types})
         
-        # FFN Block
         self.norm2 = nn.ModuleDict({nt: nn.LayerNorm(hidden_dim) for nt in node_types})
         self.ffn = nn.ModuleDict({
             nt: nn.Sequential(
@@ -180,11 +178,9 @@ class HGTTransformerLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x_dict: Dict[str, torch.Tensor], edge_index_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        # 1. Pre-Norm Attention
         x_norm = {k: self.norm1[k](v) for k, v in x_dict.items()}
         out_dict = self.attn(x_norm, edge_index_dict)
         
-        # Residual Connection (Attn)
         x_dict_attn = {}
         for k, v in x_dict.items():
             if k in out_dict:
@@ -192,7 +188,6 @@ class HGTTransformerLayer(nn.Module):
             else:
                 x_dict_attn[k] = v
                 
-        # 2. Pre-Norm FFN
         x_out = {}
         for k, v in x_dict_attn.items():
             if k in self.ffn:
@@ -248,7 +243,6 @@ class HGTBackbone(nn.Module):
                 for _ in range(num_layers)
             ]
         )
-        # Note: Final normalization is handled by the TwiBotModel wrapper or task head
         
         self.feature_projectors = nn.ModuleDict(
             {ntype: nn.Linear(dim, hidden_dim) for ntype, dim in feature_dims.items()}
@@ -259,8 +253,6 @@ class HGTBackbone(nn.Module):
             nn.init.xavier_uniform_(emb.weight)
         for tv in self.type_vectors.values():
             nn.init.xavier_uniform_(tv.unsqueeze(0))
-        # HGTTransformerLayer handles its own reset if modules have reset_parameters
-        # But we can explicitly call it just in case
         pass
 
     def _initial_x(
