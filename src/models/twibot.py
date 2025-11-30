@@ -54,6 +54,17 @@ class TwiBotModel(nn.Module):
         profile_features: torch.Tensor,
         node_features: Optional[Dict[str, torch.Tensor]] = None,
     ) -> torch.Tensor:
+        if node_features is None:
+            node_features = {}
+        
+        # Inject profile features as user node features if not already present
+        if "user" not in node_features:
+            # We can use the profile_encoder to project raw features to hidden dim first
+            # OR we can pass raw features if the backbone has a projector.
+            # Here we'll pass the raw features and let the backbone handle projection 
+            # (assuming the backbone was initialized with correct dim)
+            node_features["user"] = profile_features
+
         x_dict = self.graph_backbone(batch_data, node_features=node_features)
         user_store = batch_data["user"]
         if not hasattr(user_store, "batch_size"):

@@ -24,7 +24,7 @@ mkdir -p logs
 HIDDEN_DIM=256
 NUM_LAYERS=3
 GRAPH_HEADS=4
-DROPOUT=0.4              
+DROPOUT=0.3            
 
 BATCH_SIZE=128             
 EPOCHS=15
@@ -38,7 +38,7 @@ BOT_WEIGHT_MULT=2.0
 TARGET_POS_RATIO=""        
 LABEL_SMOOTHING=0.1        
 
-NUM_NEIGHBORS="20 10"    
+NUM_NEIGHBORS="20 10 5"    
 
 TEXT_MODEL="xlm-roberta-base"
 TEXT_MAX_LEN=256         

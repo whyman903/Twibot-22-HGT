@@ -28,7 +28,7 @@ class TrainingConfig:
     raw_data_dir: Path
     processed_data_dir: Path
     batch_size: int = 64
-    num_neighbors: Tuple[int, int] = (15, 10)
+    num_neighbors: Tuple[int, ...] = (15, 10, 5)
     num_layers: int = 3
     hidden_dim: int = 384
     graph_heads: int = 4

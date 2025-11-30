@@ -31,10 +31,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-neighbors",
         type=int,
-        nargs=2,
-        metavar=("L1", "L2"),
-        default=[15, 10],
-        help="Neighbor sample sizes per GNN layer",
+        nargs="+",
+        metavar="N",
+        default=[15, 10, 5],
+        help="Neighbor sample sizes per GNN layer (one value per layer)",
     )
     parser.add_argument("--loss", choices=["focal", "weighted_ce"], default="focal")
     parser.add_argument("--gamma", type=float, default=1.5)
@@ -178,6 +178,32 @@ def main() -> None:
     profile_sample = data_module.profile_store.fetch([0])
     profile_dim = profile_sample.shape[-1]
     profile_encoder = ProfileFeatureEncoder(input_dim=profile_dim, hidden_dims=(128, 64), dropout=cfg.dropout)
+
+    # Update node_feature_dims to include user profile features for the backbone
+    if "user" not in node_feature_dims:
+        node_feature_dims["user"] = profile_dim
+
+    # Re-initialize graph backbone with updated node_feature_dims
+    if args.use_hgt:
+        graph_backbone = HGTBackbone(
+            metadata=metadata,
+            num_nodes_dict=num_nodes_dict,
+            hidden_dim=cfg.hidden_dim,
+            num_layers=cfg.num_layers,
+            heads=cfg.graph_heads,
+            dropout=cfg.dropout,
+            node_feature_dims=node_feature_dims,
+        )
+    else:
+        graph_backbone = RelationalGraphBackbone(
+            metadata=metadata,
+            num_nodes_dict=num_nodes_dict,
+            hidden_dim=cfg.hidden_dim,
+            num_layers=cfg.num_layers,
+            heads=cfg.graph_heads,
+            dropout=cfg.dropout,
+            node_feature_dims=node_feature_dims,
+        )
 
     model = TwiBotModel(
         graph_backbone=graph_backbone,

@@ -30,10 +30,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-neighbors",
         type=int,
-        nargs=2,
-        metavar=("L1", "L2"),
-        default=[15, 10],
-        help="Neighbor sample sizes per GNN layer",
+        nargs="+",
+        metavar="N",
+        default=[15, 10, 5],
+        help="Neighbor sample sizes per GNN layer (one value per layer)",
     )
     parser.add_argument("--loss", choices=["focal", "weighted_ce"], default="focal")
     parser.add_argument("--gamma", type=float, default=1.5)
@@ -175,6 +175,17 @@ def main() -> None:
     num_nodes_dict = graph.num_nodes_dict
     node_feature_dims = data_module.get_node_feature_dims()
 
+    # Get profile dimension and add to node_feature_dims BEFORE creating backbone
+    # This is critical - the backbone needs to know user node feature dimensions
+    # to create the appropriate projection layer
+    if data_module.profile_store is None:
+        raise RuntimeError("Profile feature store is not initialized.")
+    profile_sample = data_module.profile_store.fetch([0])
+    profile_dim = profile_sample.shape[-1]
+    
+    if "user" not in node_feature_dims:
+        node_feature_dims["user"] = profile_dim
+
     if args.use_hgt:
         graph_backbone = HGTBackbone(
             metadata=metadata,
@@ -206,10 +217,6 @@ def main() -> None:
         lora_dropout=cfg.lora_dropout,
     )
 
-    if data_module.profile_store is None:
-        raise RuntimeError("Profile feature store is not initialized.")
-    profile_sample = data_module.profile_store.fetch([0])
-    profile_dim = profile_sample.shape[-1]
     profile_encoder = ProfileFeatureEncoder(input_dim=profile_dim, hidden_dims=(128, 64), dropout=cfg.dropout)
 
     model = TwiBotModel(
