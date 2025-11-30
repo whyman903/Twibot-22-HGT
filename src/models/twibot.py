@@ -35,7 +35,7 @@ class TwiBotModel(nn.Module):
         )
         self.graph_norm = nn.LayerNorm(self.graph_backbone.hidden_dim)
         self.text_norm = nn.LayerNorm(self.text_encoder.output_dim())
-        self.profile_norm = nn.LayerNorm(self.profile_encoder.output_dim)
+        # Profile encoder already includes LayerNorm at the end
         dims = [fusion_input_dim, *fusion_hidden_dims, num_classes]
         layers = []
         for in_dim, out_dim in zip(dims[:-1], dims[1:]):
@@ -61,7 +61,7 @@ class TwiBotModel(nn.Module):
         batch_size = user_store.batch_size
         graph_emb = self.graph_norm(x_dict["user"][:batch_size])
         text_emb = self.text_norm(self.text_encoder(text_inputs))
-        profile_emb = self.profile_norm(self.profile_encoder(profile_features))
+        profile_emb = self.profile_encoder(profile_features)
         fused = torch.cat([graph_emb, text_emb, profile_emb], dim=-1)
         fused = self.dropout(fused)
         logits = self.classifier(fused)

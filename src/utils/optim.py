@@ -15,30 +15,89 @@ def build_optimizers(
     weight_decay: float = 1e-2,
     text_module_names: Tuple[str, ...] = ("text_encoder",),
 ) -> Dict[str, torch.optim.Optimizer]:
-    """Constructs optimizers for graph/head parameters and optional text adapters."""
+    """Constructs optimizers with proper weight decay handling (no decay for bias/Norm)."""
 
-    text_params: List[nn.Parameter] = []
-    other_params: List[nn.Parameter] = []
+    def _group_params(modules: Iterable[nn.Module], lr: float, wd: float) -> List[Dict]:
+        decay = []
+        no_decay = []
+        for module in modules:
+            for name, param in module.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if "bias" in name or "Norm" in name or "norm" in name:
+                    no_decay.append(param)
+                else:
+                    decay.append(param)
+        return [
+            {"params": decay, "lr": lr, "weight_decay": wd},
+            {"params": no_decay, "lr": lr, "weight_decay": 0.0},
+        ]
+
+    text_modules = []
+    other_modules = []
+
+    # Split top-level modules to avoid traversing same params twice if possible,
+    # but since we don't know the structure perfectly, let's iterate named_children
+    # to assign them to text or other buckets.
+    
+    # Helper to classify a top-level module
+    def is_text_module(name: str) -> bool:
+        return any(name.startswith(tm) for tm in text_module_names)
+
+    # We need to be careful not to miss parameters. 
+    # Let's iterate all parameters and assign them to groups.
+    # But the standard way is to group by param pointers.
+    
+    text_params_decay = []
+    text_params_no_decay = []
+    other_params_decay = []
+    other_params_no_decay = []
+    
+    seen_params = set()
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if any(name.startswith(module_name) for module_name in text_module_names):
-            text_params.append(param)
+        seen_params.add(param)
+        
+        # Determine if text or other
+        is_text = any(name.startswith(tm) for tm in text_module_names)
+        
+        # Determine if decay or no decay
+        # Typical rule: bias, LayerNorm.weight, LayerNorm.bias -> no decay
+        # Also embeddings sometimes? But usually we want decay on embeddings.
+        # Simplest heuristic: 'bias' in name or 'norm' in name (case insensitive).
+        no_decay = "bias" in name or "norm" in name.lower()
+        
+        if is_text:
+            if no_decay:
+                text_params_no_decay.append(param)
+            else:
+                text_params_decay.append(param)
         else:
-            other_params.append(param)
+            if no_decay:
+                other_params_no_decay.append(param)
+            else:
+                other_params_decay.append(param)
 
     optimizers: Dict[str, torch.optim.Optimizer] = {}
-    if other_params:
-        optimizers["main"] = AdamW(
-            other_params,
-            lr=lr_backbone,
-            weight_decay=weight_decay,
-        )
-    if text_params:
-        optimizers["text"] = AdamW(
-            text_params,
-            lr=lr_text,
-            weight_decay=weight_decay,
-        )
+    
+    other_groups = []
+    if other_params_decay:
+        other_groups.append({"params": other_params_decay, "weight_decay": weight_decay})
+    if other_params_no_decay:
+        other_groups.append({"params": other_params_no_decay, "weight_decay": 0.0})
+        
+    if other_groups:
+        optimizers["main"] = AdamW(other_groups, lr=lr_backbone)
+
+    text_groups = []
+    if text_params_decay:
+        text_groups.append({"params": text_params_decay, "weight_decay": weight_decay})
+    if text_params_no_decay:
+        text_groups.append({"params": text_params_no_decay, "weight_decay": 0.0})
+
+    if text_groups:
+        optimizers["text"] = AdamW(text_groups, lr=lr_text)
+
     return optimizers

@@ -101,6 +101,12 @@ class Trainer:
         self.model.to(self.device)
         self.criterion.to(self.device)
 
+        # Move all labels to GPU once to avoid per-batch transfer
+        if self.data_module.labels is not None:
+            self.labels_gpu = self.data_module.labels.to(self.device)
+        else:
+            self.labels_gpu = None
+
         self.scaler = amp.GradScaler(
             device="cuda" if self.device.type == "cuda" else "cpu",
             enabled=config.mixed_precision and self.device.type == "cuda"
@@ -260,7 +266,11 @@ class Trainer:
             input_nodes = user_nodes.n_id[:batch_size]
             input_nodes_cpu = input_nodes.cpu()
 
-            labels_full = self.data_module.labels[input_nodes_cpu].to(self.device)
+            if self.labels_gpu is not None:
+                labels_full = self.labels_gpu[input_nodes]
+            else:
+                labels_full = self.data_module.labels[input_nodes_cpu].to(self.device)
+                
             mask = labels_full >= 0
             if mask.sum() == 0:
                 continue
@@ -372,7 +382,11 @@ class Trainer:
             input_nodes = user_nodes.n_id[:batch_size]
             input_nodes_cpu = input_nodes.cpu()
 
-            labels_full = self.data_module.labels[input_nodes_cpu].to(self.device)
+            if self.labels_gpu is not None:
+                labels_full = self.labels_gpu[input_nodes]
+            else:
+                labels_full = self.data_module.labels[input_nodes_cpu].to(self.device)
+                
             mask = labels_full >= 0
             if mask.sum() == 0:
                 continue

@@ -742,9 +742,14 @@ class TwiBot22DataModule:
         texts = self._load_texts(paths.texts_jsonl)
         if self.tokenizer is not None:
             encoded: Optional[Dict[str, torch.Tensor]] = None
-            if paths.text_tokens_pt.exists():
+            
+            # Fix: Include model name in cache filename to prevent collisions
+            model_name_safe = self.tokenizer.name_or_path.replace("/", "__")
+            tokens_path = paths.text_tokens_pt.parent / f"user_text_tokens_{model_name_safe}.pt"
+            
+            if tokens_path.exists():
                 try:
-                    encoded = _torch_load_compat(paths.text_tokens_pt)
+                    encoded = _torch_load_compat(tokens_path)
                 except Exception:
                     encoded = None
             if encoded is None:
@@ -770,7 +775,7 @@ class TwiBot22DataModule:
                 encoded = {"input_ids": input_ids, "attention_mask": attention_mask}
                 if token_type_ids:
                     encoded["token_type_ids"] = torch.cat(token_type_ids, dim=0)
-                torch.save(encoded, paths.text_tokens_pt)
+                torch.save(encoded, tokens_path)
             self.text_store = UserTextStore(
                 texts,
                 tokenizer=self.tokenizer,

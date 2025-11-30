@@ -143,8 +143,70 @@ class RelationalGraphBackbone(nn.Module):
         return x_dict
 
 
+class HGTTransformerLayer(nn.Module):
+    """Single HGT layer with proper Transformer architecture (Pre-Norm -> Attn -> Add -> Pre-Norm -> FFN -> Add)."""
+
+    def __init__(
+        self,
+        metadata: Tuple[Iterable[str], Iterable[Tuple[str, str, str]]],
+        hidden_dim: int,
+        heads: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        node_types, _ = metadata
+        
+        # Attention Block
+        self.attn = HGTConv(
+            in_channels=hidden_dim,
+            out_channels=hidden_dim,
+            metadata=metadata,
+            heads=heads,
+        )
+        self.norm1 = nn.ModuleDict({nt: nn.LayerNorm(hidden_dim) for nt in node_types})
+        
+        # FFN Block
+        self.norm2 = nn.ModuleDict({nt: nn.LayerNorm(hidden_dim) for nt in node_types})
+        self.ffn = nn.ModuleDict({
+            nt: nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim * 4),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim * 4, hidden_dim),
+                nn.Dropout(dropout),
+            ) for nt in node_types
+        })
+        
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x_dict: Dict[str, torch.Tensor], edge_index_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        # 1. Pre-Norm Attention
+        x_norm = {k: self.norm1[k](v) for k, v in x_dict.items()}
+        out_dict = self.attn(x_norm, edge_index_dict)
+        
+        # Residual Connection (Attn)
+        x_dict_attn = {}
+        for k, v in x_dict.items():
+            if k in out_dict:
+                x_dict_attn[k] = v + self.dropout(out_dict[k])
+            else:
+                x_dict_attn[k] = v
+                
+        # 2. Pre-Norm FFN
+        x_out = {}
+        for k, v in x_dict_attn.items():
+            if k in self.ffn:
+                norm_v = self.norm2[k](v)
+                ffn_out = self.ffn[k](norm_v)
+                x_out[k] = v + ffn_out
+            else:
+                x_out[k] = v
+                
+        return x_out
+
+
 class HGTBackbone(nn.Module):
-    """Heterogeneous Graph Transformer backbone using HGTConv layers."""
+    """Heterogeneous Graph Transformer backbone using full Transformer blocks."""
 
     def __init__(
         self,
@@ -177,17 +239,17 @@ class HGTBackbone(nn.Module):
 
         self.layers = nn.ModuleList(
             [
-                HGTConv(
-                    in_channels=hidden_dim,
-                    out_channels=hidden_dim,
+                HGTTransformerLayer(
                     metadata=metadata,
+                    hidden_dim=hidden_dim,
                     heads=heads,
+                    dropout=dropout,
                 )
                 for _ in range(num_layers)
             ]
         )
-        self.norms = nn.ModuleDict({ntype: nn.LayerNorm(hidden_dim) for ntype in node_types})
-        self.dropout = nn.Dropout(dropout)
+        # Note: Final normalization is handled by the TwiBotModel wrapper or task head
+        
         self.feature_projectors = nn.ModuleDict(
             {ntype: nn.Linear(dim, hidden_dim) for ntype, dim in feature_dims.items()}
         )
@@ -197,9 +259,9 @@ class HGTBackbone(nn.Module):
             nn.init.xavier_uniform_(emb.weight)
         for tv in self.type_vectors.values():
             nn.init.xavier_uniform_(tv.unsqueeze(0))
-        for layer in self.layers:
-            if hasattr(layer, "reset_parameters"):
-                layer.reset_parameters()
+        # HGTTransformerLayer handles its own reset if modules have reset_parameters
+        # But we can explicitly call it just in case
+        pass
 
     def _initial_x(
         self,
@@ -246,11 +308,5 @@ class HGTBackbone(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         x_dict = self._initial_x(data, node_features=node_features)
         for layer in self.layers:
-            x_dict_norm = {k: self.norms[k](v) for k, v in x_dict.items()}
-            x_dict_out = layer(x_dict_norm, data.edge_index_dict)
-
-            for k in x_dict.keys():
-                if k in x_dict_out:
-                    out = self.dropout(x_dict_out[k])
-                    x_dict[k] = x_dict[k] + out
+            x_dict = layer(x_dict, data.edge_index_dict)
         return x_dict
