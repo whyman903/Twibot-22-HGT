@@ -29,8 +29,10 @@ class RobertaTextEncoder(nn.Module):
             cfg.add_pooling_layer = False
         self.model = AutoModel.from_pretrained(model_name, config=cfg)
 
-        if gradient_checkpointing and trainable:
+        if gradient_checkpointing and (trainable or use_lora):
             self.model.gradient_checkpointing_enable()
+            if use_lora and hasattr(self.model, "enable_input_require_grads"):
+                self.model.enable_input_require_grads()
 
         if not trainable:
             for param in self.model.parameters():

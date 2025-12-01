@@ -13,6 +13,7 @@ pyarrow
 torch-geometric
 torch-sparse
 torch-scatter
+pyg-lib
 tensorboard
 peft
 networkx

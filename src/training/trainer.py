@@ -259,7 +259,7 @@ class Trainer:
         num_batches = len(loader)
         print(f"Starting epoch {epoch} ({num_batches} batches)...", flush=True)
 
-        for batch_idx, batch in enumerate(tqdm(loader, desc=f"Epoch {epoch}", file=sys.stdout, miniters=100, mininterval=30)):
+        for batch_idx, batch in enumerate(tqdm(loader, desc=f"Epoch {epoch}", file=sys.stdout, miniters=500, mininterval=120, smoothing=0)):
             batch = batch.to(self.device)
             user_nodes = batch["user"]
             batch_size = user_nodes.batch_size
@@ -374,7 +374,7 @@ class Trainer:
         total_loss = 0.0
         total_examples = 0
 
-        for batch in tqdm(loader, desc=f"Evaluating {split}", file=sys.stdout, miniters=50, mininterval=30):
+        for batch in tqdm(loader, desc=f"Evaluating {split}", file=sys.stdout, miniters=200, mininterval=120, smoothing=0):
             batch = batch.to(self.device)
             user_nodes = batch["user"]
             batch_size = user_nodes.batch_size

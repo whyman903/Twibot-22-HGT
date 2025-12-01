@@ -737,6 +737,11 @@ class TwiBot22DataModule:
                 return torch.load(p)
 
         self.graph = _torch_load_compat(paths.graph_pt)
+        # Make edge indices contiguous for pyg-lib compatibility
+        for edge_type in self.graph.edge_types:
+            store = self.graph[edge_type]
+            if hasattr(store, 'edge_index') and store.edge_index is not None:
+                store.edge_index = store.edge_index.contiguous()
         with paths.user_ids_json.open("r", encoding="utf-8") as handle:
             self.user_ids = json.load(handle)
         texts = self._load_texts(paths.texts_jsonl)

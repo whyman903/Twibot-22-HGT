@@ -13,7 +13,7 @@
 set -euo pipefail
 
 export TOKENIZERS_PARALLELISM=false
-
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Setup
 cd /sciclone/home/hwhyman/Graph_learning
 source .venv/bin/activate
@@ -53,8 +53,8 @@ ENABLE_TWEET_TEXT=true
 
 EVAL_SPLIT=test
 
-REBUILD_FLAG="--rebuild"
-# REBUILD_FLAG=""
+#REBUILD_FLAG="--rebuild"
+REBUILD_FLAG=""
 
 RESUME_FLAG=""             
 # RESUME_FLAG="--resume"
