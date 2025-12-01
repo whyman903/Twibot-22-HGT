@@ -125,28 +125,40 @@ The outputs of the three branches are concatenated to form a dense user represen
 ## 5. HGT Layer Diagram
 
 ```mermaid
-graph TD
-    subgraph "HGT Transformer Layer"
-        Input[Input Node Features]
-        Norm1[LayerNorm]
-        Attn["<b>HGT Attention</b><br>Heterogeneous Multi-Head Attn"]
-        Add1((+))
-        Norm2[LayerNorm]
-        FFN["<b>Feed Forward</b><br>Linear -> GELU -> Dropout -> Linear"]
-        Add2((+))
-        Output[Output Node Features]
+graph TB
+    subgraph Layer ["HGT Transformer Layer"]
+        direction TB
+        
+        In[Input Node Features]
+        
+        subgraph AttnBlock ["Attention Block"]
+            direction TB
+            LN1[LayerNorm]
+            HGT["HGT Attention<br>(Multi-Head)"]
+            Add1((+))
+        end
+        
+        subgraph FFNBlock ["Feed-Forward Block"]
+            direction TB
+            LN2[LayerNorm]
+            FFN["FFN<br>(Linear -> GELU -> Linear)"]
+            Add2((+))
+        end
+        
+        Out[Output Node Features]
 
-        Input --> Norm1
-        Norm1 --> Attn
-        Input --> Add1
-        Attn --> Add1
+        %% Connections
+        In --> LN1
+        LN1 --> HGT
+        HGT --> Add1
+        In --> Add1
         
-        Add1 --> Norm2
-        Norm2 --> FFN
-        Add1 --> Add2
+        Add1 --> LN2
+        LN2 --> FFN
         FFN --> Add2
+        Add1 --> Add2
         
-        Add2 --> Output
+        Add2 --> Out
     end
 ```
 
