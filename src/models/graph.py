@@ -108,9 +108,9 @@ class RelationalGraphBackbone(nn.Module):
         x_dict: Dict[str, torch.Tensor] = {}
         for node_type in data.node_types:
             if node_features is not None and node_type in node_features:
-                projector = self.feature_projectors.get(node_type)
-                if projector is None:
+                if node_type not in self.feature_projectors:
                     raise ValueError(f"No projector registered for features of node type '{node_type}'")
+                projector = self.feature_projectors[node_type]
                 feats = node_features[node_type]
                 x = projector(feats)
             elif node_type in self.node_embeddings:
@@ -263,9 +263,9 @@ class HGTBackbone(nn.Module):
         x_dict: Dict[str, torch.Tensor] = {}
         for node_type in data.node_types:
             if node_features is not None and node_type in node_features:
-                projector = self.feature_projectors.get(node_type)
-                if projector is None:
+                if node_type not in self.feature_projectors:
                     raise ValueError(f"No projector registered for features of node type '{node_type}'")
+                projector = self.feature_projectors[node_type]
                 feats = node_features[node_type]
                 x = projector(feats)
             elif node_type in self.node_embeddings:
