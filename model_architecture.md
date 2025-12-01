@@ -10,20 +10,20 @@ The model consists of three parallel branches that process different modalities 
 graph TD
     subgraph Inputs
         G[Heterogeneous Graph]
-        T[User Text<br>(Bio + Tweets)]
-        P[Profile Features<br>(23 dim)]
+        T["User Text<br>(Bio + Tweets)"]
+        P["Profile Features<br>(23 dim)"]
     end
 
     subgraph Encoders
         direction TB
-        HGT[<b>HGT Backbone</b><br>3 Layers, 256 dim<br>4 Heads]
-        TXT[<b>Text Encoder</b><br>XLM-RoBERTa w/ LoRA<br>768 dim]
-        PRF[<b>Profile Encoder</b><br>2-Layer MLP<br>64 dim]
+        HGT["<b>HGT Backbone</b><br>3 Layers, 256 dim<br>4 Heads"]
+        TXT["<b>Text Encoder</b><br>XLM-RoBERTa w/ LoRA<br>768 dim"]
+        PRF["<b>Profile Encoder</b><br>2-Layer MLP<br>64 dim"]
     end
 
     subgraph Fusion
-        C[Concatenation<br>256 + 768 + 64 = 1088 dim]
-        MLP[<b>Classifier MLP</b><br>1088 -> 512 -> 256 -> 128 -> 2]
+        C["Concatenation<br>256 + 768 + 64 = 1088 dim"]
+        MLP["<b>Classifier MLP</b><br>1088 -> 512 -> 256 -> 128 -> 2"]
     end
 
     G --> HGT
@@ -129,10 +129,10 @@ graph TD
     subgraph "HGT Transformer Layer"
         Input[Input Node Features]
         Norm1[LayerNorm]
-        Attn[<b>HGT Attention</b><br>Heterogeneous Multi-Head Attn]
+        Attn["<b>HGT Attention</b><br>Heterogeneous Multi-Head Attn"]
         Add1((+))
         Norm2[LayerNorm]
-        FFN[<b>Feed Forward</b><br>Linear -> GELU -> Dropout -> Linear]
+        FFN["<b>Feed Forward</b><br>Linear -> GELU -> Dropout -> Linear"]
         Add2((+))
         Output[Output Node Features]
 
